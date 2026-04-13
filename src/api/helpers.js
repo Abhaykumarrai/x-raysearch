@@ -283,13 +283,27 @@ function isApolloLocalHost() {
   return h === "localhost" || h === "127.0.0.1" || h === "[::1]";
 }
 
+/**
+ * Webhook Apollo POSTs to for async phone reveal. `VITE_APOLLO_WEBHOOK_URL` overrides;
+ * otherwise uses same-origin `/api/apollo-webhook` so each Vercel preview URL stays in sync.
+ */
+function resolveApolloWebhookUrl() {
+  if (typeof window !== "undefined" && isApolloLocalHost()) return "";
+  if (APOLLO_WEBHOOK_URL) return APOLLO_WEBHOOK_URL;
+  if (typeof window !== "undefined" && window.location?.origin) {
+    return `${window.location.origin}/api/apollo-webhook`;
+  }
+  return "";
+}
+
 /** Apollo.io — enrich a person by name + company */
 export async function apolloEnrich(name, company, linkedinUrl) {
   if (!APOLLO_KEY) {
     throw new Error("Missing VITE_APOLLO_API_KEY");
   }
   const linkedin_url = linkedinUrl ? normalizeLinkedInUrl(linkedinUrl) : "";
-  const usePhoneWebhook = !isApolloLocalHost() && Boolean(APOLLO_WEBHOOK_URL);
+  const webhookUrl = resolveApolloWebhookUrl();
+  const usePhoneWebhook = !isApolloLocalHost() && Boolean(webhookUrl);
   // Same-origin via Vite proxy (vite.config.js) → https://api.apollo.io — avoids CORS from the browser.
   const response = await fetch("/apolloio/v1/people/match", {
     method: "POST",
@@ -304,9 +318,9 @@ export async function apolloEnrich(name, company, linkedinUrl) {
       organization_name: company,
       ...(linkedin_url ? { linkedin_url } : {}),
       reveal_personal_emails: true,
-      // Prod (non-localhost): phone reveal + webhook when VITE_APOLLO_WEBHOOK_URL is set. Local: key-only match, no webhook.
+      // Non-localhost: phone reveal when webhook URL is available (env or same-origin /api/apollo-webhook).
       reveal_phone_number: usePhoneWebhook,
-      ...(usePhoneWebhook ? { webhook_url: APOLLO_WEBHOOK_URL } : {}),
+      ...(usePhoneWebhook ? { webhook_url: webhookUrl } : {}),
     }),
   });
   const data = await response.json().catch(() => ({}));

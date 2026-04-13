@@ -1,0 +1,12 @@
+{
+  "rewrites": [
+    {
+      "source": "/serpapi/:path*",
+      "destination": "https://serpapi.com/:path*"
+    },
+    {
+      "source": "/apolloio/:path*",
+      "destination": "https://api.apollo.io/:path*"
+    }
+  ]
+}

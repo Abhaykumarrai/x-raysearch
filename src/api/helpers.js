@@ -182,7 +182,15 @@ export async function searchGoogle(query, options = {}) {
   }
   const num = Math.min(100, Math.max(1, Number(options.num) || SERP_NUM));
   const maxPages = Math.min(10, Math.max(1, Number(options.maxPages) || SERP_MAX_PAGES_DEFAULT));
-  const serpPath = "/serpapi/search.json";
+  /** Local: Vite proxies `/serpapi` → serpapi.com. Production (e.g. Vercel): serverless `/api/serp-google` avoids SerpApi browser CORS. */
+  const serpPath =
+    import.meta.env.DEV ||
+    (typeof window !== "undefined" &&
+      (window.location.hostname === "localhost" ||
+        window.location.hostname === "127.0.0.1" ||
+        window.location.hostname === "[::1]"))
+      ? "/serpapi/search.json"
+      : "/api/serp-google";
   const mergeSerpBlocks = options.mergeSerpBlocks !== false;
 
   async function fetchPage(pageIndex) {

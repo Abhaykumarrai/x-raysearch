@@ -10,6 +10,7 @@ const apiProxy = {
     secure: true,
     rewrite: (path) => path.replace(/^\/serpapi/, ""),
   },
+  // /apolloio/v1/... → https://api.apollo.io/v1/...
   "/apolloio": {
     target: "https://api.apollo.io",
     changeOrigin: true,

@@ -14,18 +14,15 @@ function readStoredTheme() {
 import SearchDashboard from "./components/dashboard/SearchDashboard.jsx";
 import ShortlistedView from "./components/dashboard/ShortlistedView.jsx";
 import SourceResultsView from "./components/dashboard/SourceResultsView.jsx";
-import ConfigurationView from "./components/dashboard/ConfigurationView.jsx";
 import Sidebar from "./components/layout/Sidebar.jsx";
 import TopBar from "./components/layout/TopBar.jsx";
 import DraggableVoiceOrb from "./components/ui/DraggableVoiceOrb.jsx";
 import { bootstrapNayraIntroPlayback } from "./lib/nayraIntro.js";
 import { primeSpeechSynthesisFromGesture, setNayraSpeechUserAllowed } from "./lib/voiceReadout.js";
 import {
-  getApiKeyConfig,
   getNayraEnabled,
   getSearchHistory,
   getShortlist,
-  saveApiKeyConfig,
   saveNayraEnabled,
   shortlistKey,
   toggleShortlist,
@@ -47,7 +44,6 @@ export default function App() {
   const [shortlistVersion, setShortlistVersion] = useState(0);
   const [uiTheme, setUiTheme] = useState(() => readStoredTheme());
   const [nayraEnabled, setNayraEnabled] = useState(() => getNayraEnabled());
-  const [apiKeys, setApiKeys] = useState(() => getApiKeyConfig());
   const nayraEnabledRef = useRef(nayraEnabled);
   nayraEnabledRef.current = nayraEnabled;
 
@@ -105,11 +101,6 @@ export default function App() {
     setShortlistVersion((v) => v + 1);
   }
 
-  function handleSaveApiConfig(next) {
-    setApiKeys(next);
-    saveApiKeyConfig(next);
-  }
-
   function navigateTo(next) {
     if (next === "dashboard") setSourceId(null);
     setPage(next);
@@ -139,7 +130,6 @@ export default function App() {
     if (page === "source") return "";
     if (page === "dashboard") return "Universal search dashboard";
     if (page === "shortlisted") return "Shortlisted candidates";
-    if (page === "configuration") return "Configuration";
     const labels = {
       linkedin: "LinkedIn",
       github: "GitHub",
@@ -154,7 +144,6 @@ export default function App() {
     if (page === "source") return "";
     if (page === "dashboard") return "Find the right candidate with universal multi-source search.";
     if (page === "shortlisted") return "Profiles you saved for follow-up.";
-    if (page === "configuration") return "Set and save your API keys for OpenAI, SerpApi, and Apollo.";
     return extracted?.jobTitle ? `Role: ${extracted.jobTitle}` : "";
   }
 
@@ -233,9 +222,6 @@ export default function App() {
               shortlistedUrls={shortlistedUrls}
               onVersionBump={() => setShortlistVersion((v) => v + 1)}
             />
-          ) : null}
-          {page === "configuration" ? (
-            <ConfigurationView uiTheme={uiTheme} apiKeys={apiKeys} onSave={handleSaveApiConfig} />
           ) : null}
         </div>
         <DraggableVoiceOrb uiTheme={uiTheme} nayraActive={nayraEnabled} />

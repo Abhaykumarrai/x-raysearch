@@ -41,22 +41,3 @@ export function IconUser({ className = "" }) {
     </svg>
   );
 }
-
-export function IconSettings({ className = "" }) {
-  return (
-    <svg className={`${iconClass} ${className}`} viewBox="0 0 24 24" fill="none" aria-hidden>
-      <path
-        d="M12 15.5a3.5 3.5 0 1 0 0-7 3.5 3.5 0 0 0 0 7Z"
-        stroke="currentColor"
-        strokeWidth="2"
-      />
-      <path
-        d="m19.4 15 1.1 1.8-1.9 3.2-2.2-.6a7.6 7.6 0 0 1-1.5.9l-.3 2.2H9.3L9 20.3a7.6 7.6 0 0 1-1.5-.9l-2.2.6-1.9-3.2L4.6 15a8 8 0 0 1 0-1.8L3.5 11.4l1.9-3.2 2.2.6c.5-.4 1-.7 1.5-.9l.3-2.2h5.4l.3 2.2c.5.2 1 .5 1.5.9l2.2-.6 1.9 3.2-1.1 1.8a8 8 0 0 1 0 1.8Z"
-        stroke="currentColor"
-        strokeWidth="1.6"
-        strokeLinecap="round"
-        strokeLinejoin="round"
-      />
-    </svg>
-  );
-}

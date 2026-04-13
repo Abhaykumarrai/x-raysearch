@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
-import { callOpenAI, sleep } from "../../api/helpers.js";
+import { callOpenAI, isSerpApiBenignEmptyMessage, sleep } from "../../api/helpers.js";
 import { dedupeCandidates, searchGoogleAndParseCandidates } from "../../lib/linkedinXRayPipeline.js";
 import Spinner from "../ui/Spinner.jsx";
 import { ALL_PLATFORM_IDS, PLATFORMS } from "./SourceSelector.jsx";
@@ -73,13 +73,20 @@ export default function XRayQueries({
           collected.push(...parsed);
           errs.push(...parseErrors);
         } catch (se) {
-          setSearchError(`SerpApi error: ${se?.message || "search failed"}`);
+          const msg = se?.message || "";
+          if (!isSerpApiBenignEmptyMessage(msg)) {
+            setSearchError(`SerpApi error: ${msg || "search failed"}`);
+          }
         }
         if (i < ids.length - 1) await sleep(250);
       }
       setSearchingId(null);
       onCandidates(dedupeCandidates(collected));
-      setParseErrors(errs.slice(0, 8));
+      const reportable = errs.filter((line) => {
+        const m = String(line).replace(/^SerpApi:\s*/i, "").trim();
+        return m && !isSerpApiBenignEmptyMessage(m);
+      });
+      setParseErrors(reportable.slice(0, 8));
       setPhase("done");
       return true;
     } catch (e) {

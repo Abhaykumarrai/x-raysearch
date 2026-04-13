@@ -1,7 +1,6 @@
 const SHORTLIST_KEY = "open_search_shortlist_v1";
 const HISTORY_KEY = "open_search_history_v1";
 const NAYRA_ENABLED_KEY = "xray-sourcer-nayra-enabled";
-const API_KEYS_CONFIG_KEY = "xray-sourcer-api-keys-v1";
 
 function safeParse(json, fallback) {
   try {
@@ -65,39 +64,6 @@ export function saveNayraEnabled(enabled) {
   if (typeof localStorage === "undefined") return;
   try {
     localStorage.setItem(NAYRA_ENABLED_KEY, enabled ? "1" : "0");
-  } catch {
-    /* ignore */
-  }
-}
-
-export function getApiKeyConfig() {
-  if (typeof localStorage === "undefined") return { openai: "", serp: "", apollo: "" };
-  try {
-    const raw = localStorage.getItem(API_KEYS_CONFIG_KEY);
-    const parsed = safeParse(raw || "{}", {});
-    return {
-      openai: String(parsed?.openai || "").trim(),
-      serp: String(parsed?.serp || "").trim(),
-      apollo: String(parsed?.apollo || "").trim(),
-    };
-  } catch {
-    return { openai: "", serp: "", apollo: "" };
-  }
-}
-
-export function saveApiKeyConfig(value) {
-  if (typeof localStorage === "undefined") return;
-  const next = {
-    openai: String(value?.openai || "").trim(),
-    serp: String(value?.serp || "").trim(),
-    apollo: String(value?.apollo || "").trim(),
-  };
-  try {
-    if (!next.openai && !next.serp && !next.apollo) {
-      localStorage.removeItem(API_KEYS_CONFIG_KEY);
-      return;
-    }
-    localStorage.setItem(API_KEYS_CONFIG_KEY, JSON.stringify(next));
   } catch {
     /* ignore */
   }

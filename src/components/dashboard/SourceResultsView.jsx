@@ -68,7 +68,6 @@ export default function SourceResultsView({
   const busy = phase === "queries" || phase === "search";
   const isLinkedIn = sourceId === "linkedin";
   const light = uiTheme === "light";
-  const hasAnyResults = (candidates?.length || 0) > 0 || (scoredCandidates?.length || 0) > 0;
 
   if (!ready) {
     return (
@@ -108,10 +107,10 @@ export default function SourceResultsView({
         </div>
       ) : null}
 
-      {err && !busy && !hasAnyResults ? (
+      {err ? (
         <p className={`mt-4 text-sm ${light ? "text-red-600" : "text-red-400"}`}>{err}</p>
       ) : null}
-      {parseErrors.length > 0 && !busy && !hasAnyResults ? (
+      {parseErrors.length > 0 && !busy ? (
         <div
           className={`mt-4 rounded-lg border p-3 text-xs ${
             light
@@ -120,17 +119,6 @@ export default function SourceResultsView({
           }`}
         >
           {parseErrors.slice(0, 4).join(" · ")}
-        </div>
-      ) : null}
-      {parseErrors.length > 0 && hasAnyResults ? (
-        <div
-          className={`mt-4 rounded-lg border p-3 text-xs ${
-            light
-              ? "border-amber-300/70 bg-amber-50 text-amber-900"
-              : "border-amber-500/30 bg-amber-950/20 text-amber-200"
-          }`}
-        >
-          Some search pages returned limited results. Showing best matches found so far.
         </div>
       ) : null}
 

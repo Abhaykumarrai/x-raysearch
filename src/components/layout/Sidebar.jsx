@@ -1,5 +1,5 @@
 import { PLATFORMS } from "../steps/SourceSelector.jsx";
-import { IconClock, IconSearch, IconSettings, IconStar, IconUser } from "./SidebarIcons.jsx";
+import { IconClock, IconSearch, IconStar, IconUser } from "./SidebarIcons.jsx";
 
 const platformById = Object.fromEntries(PLATFORMS.map((p) => [p.id, p]));
 
@@ -82,22 +82,6 @@ export default function Sidebar({
               {shortlistedCount}
             </span>
           ) : null}
-        </button>
-        <button
-          type="button"
-          onClick={() => onNavigate("configuration")}
-          className={`mt-1 flex w-full items-center gap-2 rounded-xl border px-3 py-2.5 text-left text-sm font-medium transition ${
-            active === "configuration"
-              ? light
-                ? "border-amber-200/90 bg-amber-50/90 text-violet-900 shadow-sm"
-                : "border-transparent bg-violet-600/20 text-violet-300"
-              : light
-                ? "border-transparent text-stone-600 hover:border-amber-200/60 hover:bg-white hover:text-stone-900"
-                : "border-transparent text-zinc-400 hover:bg-zinc-900 hover:text-zinc-200"
-          }`}
-        >
-          <IconSettings />
-          Configuration
         </button>
 
         <p

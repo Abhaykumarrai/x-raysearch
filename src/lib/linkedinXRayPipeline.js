@@ -1,4 +1,4 @@
-import { callOpenAI, searchGoogle, sleep } from "../api/helpers.js";
+import { callOpenAI, isSerpApiBenignEmptyMessage, searchGoogle, sleep } from "../api/helpers.js";
 
 const SEARCH_PLATFORM_IDS = ["linkedin"];
 
@@ -14,15 +14,6 @@ const LINKEDIN_SERP_NUM = Math.min(100, Math.max(1, Number(import.meta.env.VITE_
 
 /** Max organic rows sent in one OpenAI parse (token + latency bound). */
 const MAX_ORGANIC_AI_BATCH = 22;
-
-function normalizePipelineWarning(msg) {
-  const text = String(msg || "").trim();
-  if (!text) return "Search warning";
-  if (/hasn'?t returned any results/i.test(text) || /no results/i.test(text)) {
-    return "Google returned few results for this query; trying best available matches.";
-  }
-  return text;
-}
 
 function normalizeUrl(url) {
   try {
@@ -229,17 +220,23 @@ export async function runLinkedInXRaySearch({
         collected.push(...candidates);
         errs.push(...parseErrors);
       } catch (se) {
-        const raw = se?.message || "search failed";
-        errs.push(`SerpApi: ${normalizePipelineWarning(raw)}`);
+        const msg = se?.message || "";
+        if (!isSerpApiBenignEmptyMessage(msg)) {
+          errs.push(`SerpApi: ${msg || "search failed"}`);
+        }
       }
       if (i < ids.length - 1) await sleep(250);
     }
     onSearchingId?.(null);
     const deduped = dedupeCandidates(collected);
     onCandidates?.(deduped);
-    onParseErrors?.(errs.slice(0, 8));
+    const reportable = errs.filter((line) => {
+      const m = String(line).replace(/^SerpApi:\s*/i, "").trim();
+      return m && !isSerpApiBenignEmptyMessage(m);
+    });
+    onParseErrors?.(reportable.slice(0, 8));
     onPhase?.("done");
-    return { ok: true, queries: cleaned, candidates: deduped, parseErrors: errs.slice(0, 8) };
+    return { ok: true, queries: cleaned, candidates: deduped, parseErrors: reportable.slice(0, 8) };
   } catch (e) {
     onPhase?.("idle");
     return {

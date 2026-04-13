@@ -1,4 +1,5 @@
 import { useState } from "react";
+import ApolloProfileModal from "./ApolloProfileModal.jsx";
 import PlatformBadge from "./PlatformBadge.jsx";
 import ScoreBadge, { scoreTone } from "./ScoreBadge.jsx";
 import SkillTag from "./SkillTag.jsx";
@@ -81,11 +82,24 @@ export default function CandidateCard({
   contactCollapsed = true,
   /** Dark cards: show spinner instead of % until AI score arrives */
   scorePending = false,
-  onOpenApolloCv,
 }) {
   const dark = variant === "dark";
   const [contactOpen, setContactOpen] = useState(!contactCollapsed);
   const [scoreRationaleOpen, setScoreRationaleOpen] = useState(false);
+  const [apolloModalPayload, setApolloModalPayload] = useState(null);
+
+  async function handleViewProfile() {
+    try {
+      if (candidate.apolloPayload) {
+        setApolloModalPayload(candidate.apolloPayload);
+        return;
+      }
+      const payload = await onEnrich(candidate);
+      if (payload) setApolloModalPayload(payload);
+    } catch {
+      /* enrichError from parent */
+    }
+  }
 
   const skills = Array.isArray(candidate.skills) ? candidate.skills : [];
   const scoreBullets = (Array.isArray(candidate.scoreExplanation) ? candidate.scoreExplanation : []).filter(
@@ -224,71 +238,47 @@ export default function CandidateCard({
           ) : (
             <span />
           )}
-          <div className="flex flex-wrap items-center justify-end gap-2">
-            {platformBadgeHref ? (
-              <a
-                href={platformBadgeHref}
-                target="_blank"
-                rel="noreferrer"
-                className="inline-flex items-center justify-center rounded-xl border border-zinc-600 bg-zinc-800/80 px-4 py-2.5 text-sm font-semibold text-zinc-100 no-underline transition hover:border-violet-500/50 hover:bg-violet-600/15 hover:text-white"
-              >
-                View profile
-              </a>
-            ) : null}
-            <button
-              type="button"
-              onClick={() => setContactOpen((o) => !o)}
-              className="rounded-lg px-2 py-2 text-sm font-medium text-violet-300 hover:bg-zinc-800/60 hover:text-violet-200"
-            >
-              {contactOpen ? "Hide contact" : "Reveal contact"}
-            </button>
-          </div>
+          <button
+            type="button"
+            onClick={() => void handleViewProfile()}
+            disabled={enriching}
+            className="inline-flex items-center gap-2 rounded-xl bg-violet-600 px-4 py-2.5 text-sm font-semibold text-white shadow-sm hover:bg-violet-500 disabled:opacity-60"
+          >
+            {enriching ? <Spinner className="size-4 border-white/40 border-t-white" /> : null}
+            View candidate profile
+          </button>
         </div>
 
-        {contactOpen ? (
-          <div className="mt-4 border-t border-zinc-700/90 pt-4">
-            <button
-              type="button"
-              onClick={() => onEnrich(candidate)}
-              disabled={enriching}
-              className="inline-flex items-center gap-2 rounded-lg bg-violet-600 px-4 py-2 text-sm font-semibold text-white hover:bg-violet-500 disabled:opacity-60"
-            >
-              {enriching ? <Spinner className="size-4 border-white/40 border-t-white" /> : null}
-              Fetch candidate data
-            </button>
-            {enriching ? (
-              <p className="mt-2 flex items-center gap-2 text-xs text-zinc-500">
-                <Spinner className="size-4" /> Fetching…
-              </p>
-            ) : null}
-            {enrichError ? <p className="mt-2 text-xs text-red-400">{enrichError}</p> : null}
-            {(candidate.email || candidate.phone) && candidate.enriched ? (
-              <div className="mt-3 space-y-2 rounded-lg border border-zinc-700 bg-zinc-950 p-3 text-sm text-zinc-200">
-                {candidate.email ? (
-                  <div className="flex flex-wrap gap-2">
-                    <span className="text-zinc-500">Email</span>
-                    <span className="font-mono">{candidate.email}</span>
-                  </div>
-                ) : null}
-                {candidate.phone ? (
-                  <div className="flex flex-wrap gap-2">
-                    <span className="text-zinc-500">Phone</span>
-                    <span className="font-mono">{candidate.phone}</span>
-                  </div>
-                ) : null}
-              </div>
-            ) : null}
-            {candidate.apolloPerson ? (
-              <button
-                type="button"
-                onClick={() => onOpenApolloCv?.(candidate)}
-                className="mt-3 inline-flex items-center gap-2 rounded-lg border border-violet-500/50 bg-violet-950/30 px-4 py-2 text-sm font-semibold text-violet-100 hover:bg-violet-900/40"
-              >
-                Open CV profile
-              </button>
-            ) : null}
-          </div>
-        ) : null}
+        <div className="mt-4 border-t border-zinc-700/90 pt-4">
+          {enriching ? (
+            <p className="flex items-center gap-2 text-xs text-zinc-500">
+              <Spinner className="size-4" /> Fetching…
+            </p>
+          ) : null}
+          {enrichError ? <p className="mt-2 text-xs text-red-400">{enrichError}</p> : null}
+          {(candidate.email || candidate.phone) && candidate.enriched ? (
+            <div className="mt-3 space-y-2 rounded-lg border border-zinc-700 bg-zinc-950 p-3 text-sm text-zinc-200">
+              {candidate.email ? (
+                <div className="flex flex-wrap gap-2">
+                  <span className="text-zinc-500">Email</span>
+                  <span className="font-mono">{candidate.email}</span>
+                </div>
+              ) : null}
+              {candidate.phone ? (
+                <div className="flex flex-wrap gap-2">
+                  <span className="text-zinc-500">Phone</span>
+                  <span className="font-mono">{candidate.phone}</span>
+                </div>
+              ) : null}
+            </div>
+          ) : null}
+        </div>
+        <ApolloProfileModal
+          open={Boolean(apolloModalPayload)}
+          onClose={() => setApolloModalPayload(null)}
+          payload={apolloModalPayload}
+          dark
+        />
       </div>
     );
   }
@@ -433,12 +423,12 @@ export default function CandidateCard({
       <div className="mt-3">
         <button
           type="button"
-          onClick={() => onEnrich(candidate)}
+          onClick={() => void handleViewProfile()}
           disabled={enriching}
           className="inline-flex items-center gap-2 rounded-lg bg-indigo-600 px-3 py-2 text-sm font-medium text-white shadow-sm hover:bg-indigo-700 disabled:opacity-60"
         >
           {enriching ? <Spinner className="size-4 border-white/40 border-t-white" /> : null}
-          Fetch candidate data
+          View candidate profile
         </button>
         {enriching ? (
           <p className="mt-2 flex items-center gap-2 text-sm text-slate-600">
@@ -485,16 +475,13 @@ export default function CandidateCard({
             ) : null}
           </div>
         ) : null}
-        {candidate.apolloPerson ? (
-          <button
-            type="button"
-            onClick={() => onOpenApolloCv?.(candidate)}
-            className="mt-2 inline-flex items-center gap-2 rounded-lg border border-indigo-200 bg-white px-3 py-2 text-sm font-medium text-indigo-700 shadow-sm hover:bg-indigo-50"
-          >
-            Open CV profile
-          </button>
-        ) : null}
       </div>
+      <ApolloProfileModal
+        open={Boolean(apolloModalPayload)}
+        onClose={() => setApolloModalPayload(null)}
+        payload={apolloModalPayload}
+        dark={false}
+      />
     </div>
   );
 }

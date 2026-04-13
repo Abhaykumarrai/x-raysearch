@@ -1,5 +1,5 @@
 import { useMemo, useState } from "react";
-import { apolloEnrich, getApolloEmailPhone } from "../../api/helpers.js";
+import { apolloEnrich, getApolloEmailPhone, slimApolloPayloadForStorage } from "../../api/helpers.js";
 import CandidateCard from "../ui/CandidateCard.jsx";
 import { getShortlist, setShortlist, shortlistKey } from "../../lib/openSearchStorage.js";
 
@@ -33,17 +33,24 @@ export default function ShortlistedView({
     setEnrichErrors((m) => ({ ...m, [url]: "" }));
     setEnrichingUrl(url);
     try {
-      const person = await apolloEnrich(candidate.name, candidate.company, candidate.profileUrl);
+      const { person, response } = await apolloEnrich(candidate.name, candidate.company, candidate.profileUrl);
       if (!person) {
-        patchShortlisted(url, { enriched: true, email: "", phone: "" });
+        patchShortlisted(url, { enriched: true, email: "", phone: "", apolloPayload: null });
         setEnrichErrors((m) => ({ ...m, [url]: "Contact info not found on Apollo" }));
-        return;
+        return null;
       }
       const { email, phone } = getApolloEmailPhone(person);
-      patchShortlisted(url, { enriched: true, email: email || "", phone: phone || "" });
+      patchShortlisted(url, {
+        enriched: true,
+        email: email || "",
+        phone: phone || "",
+        apolloPayload: slimApolloPayloadForStorage(response),
+      });
+      return response;
     } catch (e) {
       const msg = e?.message || "Unknown error";
       setEnrichErrors((m) => ({ ...m, [url]: `Apollo: ${msg}` }));
+      return null;
     } finally {
       setEnrichingUrl(null);
     }

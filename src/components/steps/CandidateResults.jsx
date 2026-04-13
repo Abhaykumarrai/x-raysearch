@@ -237,7 +237,6 @@ export default function CandidateResults({
   const [enrichingUrl, setEnrichingUrl] = useState(null);
   const [enrichErrors, setEnrichErrors] = useState({});
   const [spotlightView, setSpotlightView] = useState(true);
-  const [apolloCvCandidate, setApolloCvCandidate] = useState(null);
 
   const extractedJson = useMemo(() => JSON.stringify(extracted || {}), [extracted]);
 
@@ -548,19 +547,24 @@ export default function CandidateResults({
     setEnrichErrors((m) => ({ ...m, [url]: "" }));
     setEnrichingUrl(url);
     try {
-      const person = await apolloEnrich(candidate.name, candidate.company, candidate.profileUrl);
+      const { person, response } = await apolloEnrich(candidate.name, candidate.company, candidate.profileUrl);
       if (!person) {
-        onPatchCandidate(url, { enriched: true, email: "", phone: "", apolloPerson: null });
+        onPatchCandidate(url, { enriched: true, email: "", phone: "", apolloPayload: null });
         setEnrichErrors((m) => ({ ...m, [url]: "Contact info not found on Apollo" }));
-        return;
+        return null;
       }
       const { email, phone } = getApolloEmailPhone(person);
-      const nextPatch = { enriched: true, email: email || "", phone: phone || "", apolloPerson: person };
-      onPatchCandidate(url, nextPatch);
-      setApolloCvCandidate({ ...candidate, ...nextPatch });
+      onPatchCandidate(url, {
+        enriched: true,
+        email: email || "",
+        phone: phone || "",
+        apolloPayload: response,
+      });
+      return response;
     } catch (e) {
       const msg = e?.message || "Unknown error";
       setEnrichErrors((m) => ({ ...m, [url]: `Apollo enrichment failed: ${msg}` }));
+      return null;
     } finally {
       setEnrichingUrl(null);
     }
@@ -655,7 +659,6 @@ export default function CandidateResults({
             shortlisted={isShortlisted(spotlightCandidate)}
             onToggleShortlist={onToggleShortlist ? () => onToggleShortlist(spotlightCandidate) : undefined}
             contactCollapsed={dark}
-            onOpenApolloCv={(row) => setApolloCvCandidate(row)}
           />
         </div>
       ) : null}
@@ -678,7 +681,6 @@ export default function CandidateResults({
             onToggleShortlist={onToggleShortlist ? () => onToggleShortlist(c) : undefined}
             contactCollapsed={dark}
             scorePending={Boolean(c.scorePending)}
-            onOpenApolloCv={(row) => setApolloCvCandidate(row)}
           />
         ))}
       </div>
@@ -688,141 +690,6 @@ export default function CandidateResults({
           No candidates yet. Go back and run the X-Ray search.
         </p>
       ) : null}
-      {apolloCvCandidate?.apolloPerson ? (
-        <ApolloCvModal
-          candidate={apolloCvCandidate}
-          person={apolloCvCandidate.apolloPerson}
-          dark={dark}
-          onClose={() => setApolloCvCandidate(null)}
-        />
-      ) : null}
-    </div>
-  );
-}
-
-function ApolloCvModal({ candidate, person, dark, onClose }) {
-  const fullName = person?.name || [person?.first_name, person?.last_name].filter(Boolean).join(" ") || candidate?.name || "Candidate";
-  const role = person?.title || candidate?.title || "";
-  const location =
-    person?.formatted_address ||
-    [person?.city, person?.state, person?.country].filter(Boolean).join(", ") ||
-    candidate?.location ||
-    "";
-  const employment = Array.isArray(person?.employment_history) ? person.employment_history : [];
-  const org = person?.organization && typeof person.organization === "object" ? person.organization : null;
-  const tech = Array.isArray(org?.technology_names) ? org.technology_names.slice(0, 12) : [];
-  const skills = Array.isArray(candidate?.skills) ? candidate.skills.slice(0, 12) : [];
-
-  return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 p-4">
-      <div
-        className={`max-h-[90vh] w-full max-w-4xl overflow-y-auto rounded-2xl border p-5 ${
-          dark ? "border-zinc-700 bg-zinc-950 text-zinc-100" : "border-slate-200 bg-white text-slate-900"
-        }`}
-      >
-        <div className="flex items-start justify-between gap-3">
-          <div>
-            <h3 className="text-2xl font-bold">{fullName}</h3>
-            <p className={`mt-1 text-sm ${dark ? "text-zinc-300" : "text-slate-700"}`}>{role || "—"}</p>
-            <p className={`text-sm ${dark ? "text-zinc-400" : "text-slate-600"}`}>{location || "—"}</p>
-          </div>
-          <button
-            type="button"
-            onClick={onClose}
-            className={`rounded-lg border px-3 py-1.5 text-sm font-semibold ${
-              dark ? "border-zinc-600 bg-zinc-900 hover:bg-zinc-800" : "border-slate-200 bg-white hover:bg-slate-50"
-            }`}
-          >
-            Close
-          </button>
-        </div>
-
-        <div className="mt-4 grid gap-4 sm:grid-cols-2">
-          <InfoRow label="Email" value={person?.email || candidate?.email} dark={dark} />
-          <InfoRow label="Phone" value={candidate?.phone || person?.phone} dark={dark} />
-          <InfoRow label="LinkedIn" value={person?.linkedin_url || candidate?.profileUrl} dark={dark} isLink />
-          <InfoRow label="Headline" value={person?.headline} dark={dark} />
-        </div>
-
-        <Section title="Experience" dark={dark}>
-          {employment.length ? (
-            <div className="space-y-3">
-              {employment.slice(0, 8).map((job) => (
-                <div key={job.id || job._id || `${job.organization_name}-${job.start_date}`} className={`rounded-lg border p-3 ${dark ? "border-zinc-800 bg-zinc-900/60" : "border-slate-200 bg-slate-50"}`}>
-                  <p className="font-semibold">{job.title || "Role"}</p>
-                  <p className={`text-sm ${dark ? "text-zinc-300" : "text-slate-700"}`}>{job.organization_name || "Organization"}</p>
-                  <p className={`text-xs ${dark ? "text-zinc-400" : "text-slate-600"}`}>
-                    {job.start_date || "—"} - {job.end_date || (job.current ? "Present" : "—")}
-                  </p>
-                </div>
-              ))}
-            </div>
-          ) : (
-            <p className={`text-sm ${dark ? "text-zinc-400" : "text-slate-600"}`}>No employment history returned.</p>
-          )}
-        </Section>
-
-        <Section title="Skills" dark={dark}>
-          {skills.length ? (
-            <div className="flex flex-wrap gap-2">
-              {skills.map((s) => (
-                <span key={s} className={`rounded-full border px-2.5 py-1 text-xs ${dark ? "border-zinc-700 bg-zinc-900 text-zinc-200" : "border-slate-200 bg-slate-50 text-slate-700"}`}>
-                  {s}
-                </span>
-              ))}
-            </div>
-          ) : (
-            <p className={`text-sm ${dark ? "text-zinc-400" : "text-slate-600"}`}>No skills extracted.</p>
-          )}
-        </Section>
-
-        {org ? (
-          <Section title="Organization Snapshot" dark={dark}>
-            <p className="text-sm font-semibold">{org.name || "Organization"}</p>
-            <p className={`mt-1 text-sm ${dark ? "text-zinc-300" : "text-slate-700"}`}>
-              {[org.city, org.state, org.country].filter(Boolean).join(", ") || "—"}
-            </p>
-            <p className={`mt-1 text-sm ${dark ? "text-zinc-300" : "text-slate-700"}`}>Industry: {org.industry || "—"}</p>
-            <p className={`text-sm ${dark ? "text-zinc-300" : "text-slate-700"}`}>
-              Company size: {org.estimated_num_employees || "—"}
-            </p>
-            {tech.length ? (
-              <div className="mt-2 flex flex-wrap gap-2">
-                {tech.map((t) => (
-                  <span key={t} className={`rounded-full border px-2 py-0.5 text-xs ${dark ? "border-zinc-700 bg-zinc-900 text-zinc-200" : "border-slate-200 bg-slate-50 text-slate-700"}`}>
-                    {t}
-                  </span>
-                ))}
-              </div>
-            ) : null}
-          </Section>
-        ) : null}
-      </div>
-    </div>
-  );
-}
-
-function Section({ title, dark, children }) {
-  return (
-    <section className="mt-5">
-      <h4 className={`text-sm font-bold uppercase tracking-wide ${dark ? "text-zinc-300" : "text-slate-700"}`}>{title}</h4>
-      <div className="mt-2">{children}</div>
-    </section>
-  );
-}
-
-function InfoRow({ label, value, dark, isLink = false }) {
-  const text = String(value || "").trim();
-  return (
-    <div className={`rounded-lg border p-3 ${dark ? "border-zinc-800 bg-zinc-900/60" : "border-slate-200 bg-slate-50"}`}>
-      <p className={`text-xs font-semibold uppercase tracking-wide ${dark ? "text-zinc-400" : "text-slate-500"}`}>{label}</p>
-      {isLink && text ? (
-        <a href={text} target="_blank" rel="noreferrer" className={`mt-1 block break-all text-sm ${dark ? "text-violet-300" : "text-indigo-700"}`}>
-          {text}
-        </a>
-      ) : (
-        <p className={`mt-1 break-words text-sm ${dark ? "text-zinc-100" : "text-slate-900"}`}>{text || "—"}</p>
-      )}
     </div>
   );
 }

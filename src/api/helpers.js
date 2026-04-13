@@ -1,0 +1,426 @@
+import { getApiKeyConfig } from "../lib/openSearchStorage.js";
+
+const OPENAI_KEY = String(import.meta.env.VITE_OPENAI_API_KEY || "").trim();
+const SERP_KEY = import.meta.env.VITE_SERP_API_KEY;
+const APOLLO_KEY = import.meta.env.VITE_APOLLO_API_KEY;
+/** Public HTTPS URL Apollo POSTs to when phone is ready (required if revealing phone). */
+const APOLLO_WEBHOOK_URL = (import.meta.env.VITE_APOLLO_WEBHOOK_URL || "").trim();
+/** Chat model for all JSON extraction / scoring / analysis calls */
+const OPENAI_MODEL = import.meta.env.VITE_OPENAI_MODEL || "gpt-4o";
+
+function resolveOpenAIKey() {
+  return getApiKeyConfig().openai || OPENAI_KEY;
+}
+
+function resolveSerpKey() {
+  return getApiKeyConfig().serp || SERP_KEY;
+}
+
+function resolveApolloKey() {
+  return getApiKeyConfig().apollo || APOLLO_KEY;
+}
+
+function resolveApolloWebhookUrl() {
+  if (APOLLO_WEBHOOK_URL) return APOLLO_WEBHOOK_URL;
+  if (typeof window === "undefined") return "";
+  try {
+    const origin = String(window.location.origin || "").trim();
+    if (!origin) return "";
+    const parsed = new URL(origin);
+    const isHttps = parsed.protocol === "https:";
+    const host = parsed.hostname.toLowerCase();
+    const isLocal = host === "localhost" || host === "127.0.0.1" || host.endsWith(".local");
+    if (!isHttps || isLocal) return "";
+    // Auto webhook path for live deployments when env var is not configured.
+    return `${parsed.origin}/api/apollo-webhook`;
+  } catch {
+    return "";
+  }
+}
+
+function normalizeLinkedInUrl(url) {
+  const raw = String(url || "").trim();
+  if (!raw) return "";
+  try {
+    const parsed = new URL(raw);
+    if (/linkedin\.com$/i.test(parsed.hostname)) {
+      parsed.hostname = "www.linkedin.com";
+    }
+    parsed.search = "";
+    parsed.hash = "";
+    return parsed.toString().replace(/\/$/, "");
+  } catch {
+    return raw
+      .replace(/^https?:\/\/(?:[a-z]{2}\.)?linkedin\.com/i, "https://www.linkedin.com")
+      .split("?")[0]
+      .split("#")[0]
+      .replace(/\/$/, "");
+  }
+}
+
+export function sleep(ms) {
+  return new Promise((r) => setTimeout(r, ms));
+}
+
+function stripCodeFences(text) {
+  return text.replace(/```json\s*/gi, "").replace(/```/g, "").trim();
+}
+
+function tryParseJsonFromText(text) {
+  const clean = stripCodeFences(text);
+  try {
+    return JSON.parse(clean);
+  } catch {
+    const start = clean.indexOf("{");
+    const end = clean.lastIndexOf("}");
+    if (start !== -1 && end > start) {
+      return JSON.parse(clean.slice(start, end + 1));
+    }
+    throw new Error("Invalid JSON from model");
+  }
+}
+
+async function openaiJsonRequest(systemPrompt, userMessage, options = {}) {
+  const key = resolveOpenAIKey();
+  const max_tokens = Math.min(16384, Math.max(256, Number(options.maxTokens) || 1000));
+  const response = await fetch("https://api.openai.com/v1/chat/completions", {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      Authorization: `Bearer ${key || ""}`,
+    },
+    body: JSON.stringify({
+      model: OPENAI_MODEL,
+      max_tokens,
+      response_format: { type: "json_object" },
+      messages: [
+        { role: "system", content: systemPrompt },
+        { role: "user", content: userMessage },
+      ],
+    }),
+  });
+  const data = await response.json().catch(() => ({}));
+  if (!response.ok) {
+    const msg =
+      data?.error?.message ||
+      data?.message ||
+      response.statusText ||
+      "Request failed";
+    const code = data?.error?.code ? ` [${data.error.code}]` : "";
+    throw new Error(`${msg}${code} (HTTP ${response.status})`);
+  }
+  const choice = data.choices?.[0];
+  const message = choice?.message;
+  const refusal = message?.refusal;
+  if (refusal) {
+    throw new Error(typeof refusal === "string" ? refusal : "OpenAI refused this request (safety).");
+  }
+  const text = (message?.content && String(message.content)) || "";
+  if (!text) {
+    const fr = choice?.finish_reason || "";
+    if (fr === "length") {
+      throw new Error(
+        "OpenAI reply was truncated (token limit). Try a shorter JD or raise maxTokens in the app."
+      );
+    }
+    throw new Error(`Empty response from OpenAI${fr ? ` (finish_reason: ${fr})` : ""}.`);
+  }
+  return text;
+}
+
+/**
+ * OpenAI Chat Completions — returns parsed JSON; retries once if JSON parse fails.
+ * @param {{ maxTokens?: number }} [options] — raise for large batched JSON payloads
+ */
+export async function callOpenAI(systemPrompt, userMessage, options = {}) {
+  if (!resolveOpenAIKey()) {
+    throw new Error("Missing OpenAI API key. Add VITE_OPENAI_API_KEY or set a key in the app.");
+  }
+  const text = await openaiJsonRequest(systemPrompt, userMessage, options);
+  try {
+    return tryParseJsonFromText(text);
+  } catch (parseErr) {
+    const fixPrompt = `${userMessage}\n\nIMPORTANT: Your previous reply was not valid JSON. Respond with ONLY a single valid JSON object (matching json_object mode). No markdown, no prose, no code fences.`;
+    const text2 = await openaiJsonRequest(systemPrompt, fixPrompt, options);
+    try {
+      return tryParseJsonFromText(text2);
+    } catch {
+      throw new Error(parseErr?.message || "OpenAI response could not be parsed as JSON");
+    }
+  }
+}
+
+const SERP_NUM = 10;
+/** Default: one SerpApi request unless callers pass `maxPages` or set VITE_SERP_MAX_PAGES. */
+const SERP_MAX_PAGES_DEFAULT = Math.min(
+  10,
+  Math.max(1, Number(import.meta.env.VITE_SERP_MAX_PAGES) || 1)
+);
+
+/**
+ * From one SerpApi Google JSON payload, merge link rows Google shows outside the main organic list.
+ * Google does not put 5 paginated SERPs in one HTTP response; this widens coverage without extra API calls.
+ * @param {Record<string, unknown>} data
+ * @returns {object[]}
+ */
+export function collectSerpGoogleRowsFromOneResponse(data) {
+  if (!data || typeof data !== "object") return [];
+  const out = [];
+  const seen = new Set();
+  const add = (r) => {
+    const link = String(r?.link || "").trim();
+    if (!link || seen.has(link.toLowerCase())) return;
+    seen.add(link.toLowerCase());
+    out.push(r);
+  };
+
+  if (Array.isArray(data.organic_results)) {
+    for (const r of data.organic_results) add(r);
+  }
+
+  const extraKeys = ["inline_people", "discussions_and_forums", "perspectives"];
+  for (const key of extraKeys) {
+    const arr = data[key];
+    if (!Array.isArray(arr)) continue;
+    for (const raw of arr) {
+      if (!raw || typeof raw !== "object") continue;
+      const link = String(raw.link || raw.url || "").trim();
+      if (!link) continue;
+      add({
+        title: String(raw.title || raw.name || raw.question || "").trim(),
+        link,
+        snippet: String(raw.snippet || raw.description || "").trim(),
+      });
+    }
+  }
+
+  return out;
+}
+
+/**
+ * SerpApi — Google X-Ray search, returns merged organic-like rows.
+ * @param {string} query
+ * @param {{ maxPages?: number, num?: number, mergeSerpBlocks?: boolean }} [options]
+ *   - `maxPages` > 1 uses multiple SerpApi calls (pagination). For exactly one billable call, use `maxPages: 1`.
+ *   - With `maxPages: 1`, set `num` as high as Google honors (often ~10–20; we still request up to 100).
+ *   - `mergeSerpBlocks` (default true when maxPages===1): include inline_people / forums rows from the same JSON.
+ */
+export async function searchGoogle(query, options = {}) {
+  const serpKey = resolveSerpKey();
+  if (!serpKey) {
+    throw new Error("Missing SerpApi key. Add VITE_SERP_API_KEY or set a key in the app.");
+  }
+  const num = Math.min(100, Math.max(1, Number(options.num) || SERP_NUM));
+  const maxPages = Math.min(10, Math.max(1, Number(options.maxPages) || SERP_MAX_PAGES_DEFAULT));
+  const serpPath = "/serpapi/search.json";
+  const mergeSerpBlocks = options.mergeSerpBlocks !== false;
+
+  async function fetchPage(pageIndex) {
+    const start = pageIndex * num;
+    const params = new URLSearchParams({
+      api_key: serpKey,
+      engine: "google",
+      q: query,
+      num: String(num),
+      start: String(start),
+    });
+    const response = await fetch(`${serpPath}?${params}`);
+    const data = await response.json().catch(() => ({}));
+    if (data.error) {
+      throw new Error(data.error);
+    }
+    if (!response.ok) {
+      throw new Error(data.message || response.statusText || "SerpApi request failed");
+    }
+    return { pageIndex, data };
+  }
+
+  /** Exactly one SerpApi HTTP request: max `num` on page 1 plus extra SERP blocks in the same JSON. */
+  if (maxPages === 1) {
+    const { data } = await fetchPage(0);
+    if (mergeSerpBlocks) {
+      return collectSerpGoogleRowsFromOneResponse(data);
+    }
+    const organic = data.organic_results || [];
+    return Array.isArray(organic) ? organic : [];
+  }
+
+  const pageResults = await Promise.all(Array.from({ length: maxPages }, (_, page) => fetchPage(page)));
+  pageResults.sort((a, b) => a.pageIndex - b.pageIndex);
+
+  const merged = [];
+  const seenLinks = new Set();
+  for (const { data } of pageResults) {
+    const rows = mergeSerpBlocks ? collectSerpGoogleRowsFromOneResponse(data) : data.organic_results || [];
+    for (const r of rows) {
+      const link = String(r.link || "").trim();
+      if (link && seenLinks.has(link)) continue;
+      if (link) seenLinks.add(link);
+      merged.push(r);
+    }
+  }
+  return merged;
+}
+
+/** Apollo.io — enrich a person by name + company */
+export async function apolloEnrich(name, company, linkedinUrl) {
+  const apolloKey = resolveApolloKey();
+  const webhookUrl = resolveApolloWebhookUrl();
+  if (!apolloKey) {
+    throw new Error("Missing Apollo key. Add VITE_APOLLO_API_KEY or set a key in the app.");
+  }
+  const normalizedLinkedinUrl = normalizeLinkedInUrl(linkedinUrl);
+
+  // Same-origin via Vite proxy (vite.config.js) — avoids api.apollo.io CORS from localhost.
+  async function apolloPost(path, body) {
+    const response = await fetch(path, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "Cache-Control": "no-cache",
+        // Apollo requires the key in this header (not in JSON body). See: https://docs.apollo.io/docs/test-api-key
+        "X-Api-Key": apolloKey,
+      },
+      body: JSON.stringify(body),
+    });
+    const data = await response.json().catch(() => ({}));
+    return { response, data };
+  }
+
+  // Primary flow: people/match using linkedin_url as unique identifier.
+  if (normalizedLinkedinUrl) {
+    const { response, data } = await apolloPost("/apolloio/v1/people/match", {
+      linkedin_url: normalizedLinkedinUrl,
+      // Enable phone reveal automatically when webhook is available (typically in live HTTPS envs).
+      reveal_phone_number: Boolean(webhookUrl),
+      reveal_personal_emails: true,
+      ...(webhookUrl ? { webhook_url: webhookUrl } : {}),
+    });
+    if (response.ok && data?.person) {
+      return data.person;
+    }
+
+    // Fallback flow: mixed_people/api_search using person_linkedin_url.
+    const fallback = await apolloPost("/apolloio/v1/mixed_people/api_search", {
+      person_linkedin_url: normalizedLinkedinUrl,
+    });
+    const fp = fallback?.data;
+    if (fallback.response.ok) {
+      return (
+        fp?.person ||
+        fp?.people?.[0] ||
+        fp?.contacts?.[0] ||
+        fp?.results?.[0] ||
+        null
+      );
+    }
+
+    // Some Apollo plans cannot access mixed_people/api_search.
+    // In that case, surface primary error only instead of failing on fallback permission.
+    const fallbackInaccessible = String(fp?.error_code || "").toUpperCase() === "API_INACCESSIBLE";
+    if (fallbackInaccessible) {
+      const primaryMsg =
+        [data?.error, data?.message, data?.error_code].filter(Boolean).join(" — ") ||
+        response.statusText ||
+        "Apollo request failed";
+      throw new Error(primaryMsg);
+    }
+
+    const msg =
+      [
+        data?.error,
+        data?.message,
+        data?.error_code,
+        fp?.error,
+        fp?.message,
+        fp?.error_code,
+      ]
+        .filter(Boolean)
+        .join(" — ") || response.statusText || fallback.response.statusText || "Apollo request failed";
+    throw new Error(msg);
+  }
+
+  // No LinkedIn URL available: legacy match fallback by name + company.
+  const legacy = await apolloPost("/apolloio/v1/people/match", {
+    name,
+    organization_name: company,
+    linkedin_url: undefined,
+    reveal_personal_emails: true,
+    reveal_phone_number: Boolean(webhookUrl),
+    ...(webhookUrl ? { webhook_url: webhookUrl } : {}),
+  });
+  if (!legacy.response.ok) {
+    const msg =
+      [legacy.data?.error, legacy.data?.message, legacy.data?.error_code].filter(Boolean).join(" — ") ||
+      legacy.response.statusText ||
+      "Apollo request failed";
+    throw new Error(msg);
+  }
+  return legacy.data?.person || null;
+}
+
+/** Apollo often returns phones as `{ number, sanitized_number, source }` (e.g. primary_phone). */
+function phoneFromNestedPhoneField(obj) {
+  if (!obj || typeof obj !== "object") return "";
+  return String(
+    obj.sanitized_number ||
+      obj.sanitizedNumber ||
+      obj.number ||
+      obj.raw_number ||
+      obj.phone ||
+      ""
+  ).trim();
+}
+
+/**
+ * Normalize email/phone from Apollo `people/match` payloads.
+ * Checks primary_phone, contact.*, phone_numbers[], and legacy flat fields.
+ */
+export function getApolloEmailPhone(person) {
+  if (!person || typeof person !== "object") {
+    return { email: "", phone: "" };
+  }
+  const c = person.contact && typeof person.contact === "object" ? person.contact : {};
+
+  const email =
+    person.email ||
+    c.email ||
+    person.personal_emails?.[0] ||
+    person.corporate_email ||
+    person.sanitized_email ||
+    "";
+
+  const firstFromPhoneArray = (arr) => {
+    if (!Array.isArray(arr) || !arr.length) return "";
+    const x = arr[0];
+    if (typeof x === "string") return x.trim();
+    if (x && typeof x === "object") {
+      return (
+        phoneFromNestedPhoneField(x) ||
+        String(x.raw_number || x.rawNumber || "").trim()
+      );
+    }
+    return "";
+  };
+
+  const phone =
+    phoneFromNestedPhoneField(c.primary_phone) ||
+    phoneFromNestedPhoneField(person.primary_phone) ||
+    phoneFromNestedPhoneField(person.corporate_phone) ||
+    phoneFromNestedPhoneField(c.corporate_phone) ||
+    c.sanitized_phone ||
+    person.sanitized_phone ||
+    firstFromPhoneArray(c.phone_numbers) ||
+    firstFromPhoneArray(person.phone_numbers) ||
+    c.phone_number ||
+    person.phone_number ||
+    person.mobile_phone ||
+    c.mobile_phone ||
+    person.direct_phone ||
+    "";
+
+  return {
+    email: String(email || "").trim(),
+    phone: String(phone || "").trim(),
+  };
+}

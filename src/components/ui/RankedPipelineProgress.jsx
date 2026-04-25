@@ -14,6 +14,8 @@ export default function RankedPipelineProgress({
   serpLinkedInHits = null,
   parsedCandidateCount = 0,
   scoredCandidateCount = 0,
+  orientation = "horizontal",
+  className = "",
 }) {
   const L = variant === "light";
   const steps = [
@@ -29,11 +31,72 @@ export default function RankedPipelineProgress({
   else if (scoring) activeIndex = 2;
   else activeIndex = 3;
 
+  if (orientation === "vertical") {
+    return (
+      <div
+        className={`overflow-hidden rounded-2xl px-3 py-4 sm:px-4 ${
+          L ? "pipeline-progress-light" : "border border-zinc-800/90 bg-zinc-950/80"
+        } ${className}`}
+        role="status"
+        aria-live="polite"
+        aria-label="Search progress"
+      >
+        <div className="space-y-3">
+          {steps.map((s, i) => {
+            const done = i < activeIndex;
+            const active = i === activeIndex;
+            const ringBase = L
+              ? done
+                ? "border-emerald-400/90 bg-emerald-50 text-emerald-900 shadow-sm"
+                : active
+                  ? "pipeline-step-active border-violet-500 bg-violet-50 text-violet-900 shadow-md shadow-violet-900/10"
+                  : scoring && i === 3
+                    ? "pipeline-step-upcoming border-amber-400/80 bg-amber-50/90 text-violet-900"
+                    : "border-stone-300/90 bg-white text-stone-400 shadow-sm"
+              : done
+                ? "pipeline-step-done border-emerald-500/70 bg-emerald-500/15 text-emerald-300"
+                : active
+                  ? "pipeline-step-active border-violet-400 bg-violet-950/60 text-violet-100 shadow-[0_0_20px_rgba(167,139,250,0.35)]"
+                  : scoring && i === 3
+                    ? "pipeline-step-upcoming border-violet-500/45 bg-violet-950/40 text-violet-200/90"
+                    : "border-zinc-700/90 bg-zinc-900/50 text-zinc-600";
+            return (
+              <div key={s.id} className="flex items-start gap-3">
+                <div
+                  className={`relative flex size-9 shrink-0 items-center justify-center rounded-full border-2 text-xs font-bold transition-all duration-500 sm:size-10 ${ringBase}`}
+                >
+                  {done ? (
+                    <svg className={`size-4 ${L ? "text-emerald-700" : "text-emerald-400"}`} viewBox="0 0 24 24" fill="none" aria-hidden>
+                      <path d="M5 13l4 4L19 7" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round" />
+                    </svg>
+                  ) : active ? (
+                    <span className={`relative size-1.5 rounded-full ${L ? "bg-violet-700" : "bg-violet-200"}`} />
+                  ) : (
+                    <span className="tabular-nums opacity-70">{i + 1}</span>
+                  )}
+                </div>
+                <div className="min-w-0">
+                  <p className={`text-[11px] font-semibold uppercase tracking-wide ${active ? (L ? "text-violet-900" : "text-violet-200") : done ? (L ? "text-emerald-900" : "text-emerald-200/90") : L ? "text-stone-500" : "text-zinc-500"}`}>
+                    {s.label}
+                  </p>
+                  <p className={`font-mono text-xs font-semibold tabular-nums ${active ? (L ? "text-violet-800" : "text-violet-300/95") : done ? (L ? "text-emerald-800" : "text-emerald-400/90") : L ? "text-stone-600" : "text-zinc-500"}`}>
+                    {s.count}
+                  </p>
+                  <p className={`text-[11px] ${L ? "text-stone-500" : "text-zinc-500"}`}>{s.hint}</p>
+                </div>
+              </div>
+            );
+          })}
+        </div>
+      </div>
+    );
+  }
+
   return (
     <div
-      className={`mt-4 overflow-hidden rounded-2xl px-3 py-4 sm:px-5 ${
+      className={`${orientation === "horizontal" ? "mt-4" : ""} overflow-hidden rounded-2xl px-3 py-4 sm:px-5 ${
         L ? "pipeline-progress-light" : "border border-zinc-800/90 bg-zinc-950/80"
-      }`}
+      } ${className}`}
       role="status"
       aria-live="polite"
       aria-label="Search progress"

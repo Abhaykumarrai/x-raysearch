@@ -17,34 +17,20 @@ const PLATFORMS = [
     icon: "𝕏",
     description: "Tech voices and bios via site:x.com OR site:twitter.com",
   },
-  {
-    id: "portfolio",
-    name: "Portfolio / Personal sites",
-    icon: "🌐",
-    description: "Personal domains, case studies, and project pages",
-  },
-  {
-    id: "google",
-    name: "Google General",
-    icon: "🔎",
-    description: "Broader web discovery beyond a single platform",
-  },
 ];
 
-/** All platform ids — used for UI and filters; live Serp search uses LinkedIn only. */
+/** All platform ids — used for UI and filters. */
 export const ALL_PLATFORM_IDS = PLATFORMS.map((p) => p.id);
 
-/**
- * Read-only: every source appears selected. Actual X-Ray search runs on LinkedIn only (see X-Ray step).
- */
+/** Read-only: every source appears selected and is used by the X-Ray step. */
 export default function SourceSelector() {
   return (
     <div>
       <h2 className="text-xl font-semibold text-slate-900">Sources</h2>
       <p className="mt-1 text-slate-600">
         All major sources are shown as <span className="font-semibold text-indigo-700">active</span> for your
-        workflow. <span className="font-semibold">Live Google X-Ray search uses LinkedIn only</span> to keep
-        SerpApi usage focused and results consistent.
+        workflow. <span className="font-semibold">Live Google X-Ray search runs across all enabled sources</span> so
+        you can surface stronger candidates from multiple platforms.
       </p>
       <div className="mt-6 grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
         {PLATFORMS.map((p) => (

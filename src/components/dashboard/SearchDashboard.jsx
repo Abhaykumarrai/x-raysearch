@@ -13,9 +13,10 @@ import { PLATFORMS } from "../steps/SourceSelector.jsx";
 
 function buildSummarySpeech(extracted) {
   if (!extracted) return "";
+  const primarySkills = extracted.primarySkills || extracted.requiredSkills || [];
   const main =
     extracted.searchSummary ||
-    `You're targeting ${extracted.jobTitle || "candidates"} with emphasis on ${(extracted.requiredSkills || []).slice(0, 4).join(", ") || "your requirements"}.`;
+    `You're targeting ${extracted.jobTitle || "candidates"} with emphasis on ${primarySkills.slice(0, 4).join(", ") || "your requirements"}.`;
   return String(main).trim();
 }
 
@@ -92,6 +93,25 @@ function formatWaTime(ts) {
   } catch {
     return "";
   }
+}
+
+function splitListValue(value) {
+  const raw = String(value || "").trim();
+  if (!raw) return [];
+  if (/[|,/]/.test(raw) || /\s+(?:or|and)\s+/i.test(raw)) {
+    return raw
+      .split(/(?:\s*\|\s*|\s*,\s*|\s*\/\s*|\s+(?:or|and)\s+)/i)
+      .map((x) => x.trim())
+      .filter(Boolean);
+  }
+  if (!/\s/.test(raw) && /[a-z][A-Z]/.test(raw)) {
+    return raw
+      .replace(/([a-z])([A-Z])/g, "$1,$2")
+      .split(",")
+      .map((x) => x.trim())
+      .filter(Boolean);
+  }
+  return [raw];
 }
 
 export default function SearchDashboard({
@@ -268,26 +288,63 @@ export default function SearchDashboard({
     if (nayraEnabled) speakDashboardText(NAYRA_JD_ANALYSIS_LINE);
     try {
       const extraKeys =
-        'searchSummary (string: 2-4 sentences in second person for the recruiter dashboard: address them as "you", open with "You" — e.g. "You are searching for…"; never start with "We")';
+        'primarySkills (string[]), secondarySkills (string[]), certifications (string[]), searchSummary (string: 2-4 sentences in second person for the recruiter dashboard: address them as "you", open with "You" — e.g. "You are searching for…"; never start with "We")';
       let data;
       const extractOpts = { maxTokens: 2800 };
       if (inputKind === "jd") {
-        const system = `You are a recruitment assistant. Extract structured information from job descriptions. Your entire reply must be one valid JSON object only (no markdown, no code fences). Include ${extraKeys}.`;
-        const user = `Extract from this JD and return JSON with keys: jobTitle, requiredSkills (array), designation, experienceYears, location, education, niceToHaveSkills (array), searchSummary. searchSummary must be second person ("you"), start with "You", never "We". JD:\n${jdText}`;
+        const system = `You are a recruitment assistant extracting recruiter-searchable requirements from job descriptions. Your entire reply must be one valid JSON object only (no markdown, no code fences). Include ${extraKeys}.
+
+Rules:
+- Think like a recruiter typing keywords into a resume search box.
+- Skills must be explicit in JD text only. Never infer implied tools/tech.
+- Skills must be atomic (split "Python/Java" into "Python","Java").
+- Normalize canonical names (React.js->React, NodeJS->Node.js, k8s->Kubernetes, Postgres->PostgreSQL).
+- Exclude responsibilities, soft skills, business/domain text unless explicit product/platform (e.g. Salesforce), process abstractions (e.g. SDLC/Agile/CI-CD), and certifications from skill arrays.
+- Put core must-haves in primarySkills; nice-to-have/plus/preferred/familiarity items in secondarySkills.
+- certifications must contain certification requirements only.
+- Every skill must pass both checks: explicitly present in JD AND directly searchable by recruiter.
+`;
+        const user = `Extract from this JD and return JSON with keys: jobTitle, designation, experienceYears, location, education, primarySkills (array), secondarySkills (array), requiredSkills (array), niceToHaveSkills (array), certifications (array), searchSummary.
+Mapping: requiredSkills should mirror primarySkills, and niceToHaveSkills should mirror secondarySkills for backward compatibility.
+searchSummary must be second person ("you"), start with "You", never "We".
+JD:\n${jdText}`;
         data = await callOpenAI(system, user, extractOpts);
       } else {
-        const system = `You are a recruitment assistant. The user wrote a sourcing brief. Infer structured hiring intent. Your entire reply must be one valid JSON object only (no markdown, no code fences). Include ${extraKeys}.`;
-        const user = `From this sourcing prompt, infer and return JSON with keys: jobTitle, requiredSkills (array), designation, experienceYears, location, education, niceToHaveSkills (array), searchSummary. searchSummary must be second person ("you"), start with "You", never "We". Use reasonable defaults where unknown. Prompt:\n${jdText}`;
+        const system = `You are a recruitment assistant. The user wrote a sourcing brief and wants recruiter-searchable requirements. Your entire reply must be one valid JSON object only (no markdown, no code fences). Include ${extraKeys}.
+
+Rules:
+- Infer realistic hiring intent from prompt language.
+- Keep skills atomic and normalized to canonical industry names.
+- Prefer concrete technology/tool/platform terms over generic categories.
+- Put hard requirements in primarySkills and optional bonuses in secondarySkills.
+`;
+        const user = `From this sourcing prompt, infer and return JSON with keys: jobTitle, designation, experienceYears, location, education, primarySkills (array), secondarySkills (array), requiredSkills (array), niceToHaveSkills (array), certifications (array), searchSummary.
+Mapping: requiredSkills should mirror primarySkills, and niceToHaveSkills should mirror secondarySkills for backward compatibility.
+searchSummary must be second person ("you"), start with "You", never "We". Use reasonable defaults where unknown.
+Prompt:\n${jdText}`;
         data = await callOpenAI(system, user, extractOpts);
       }
+      const primarySkills = Array.isArray(data.primarySkills)
+        ? data.primarySkills
+        : Array.isArray(data.requiredSkills)
+          ? data.requiredSkills
+          : [];
+      const secondarySkills = Array.isArray(data.secondarySkills)
+        ? data.secondarySkills
+        : Array.isArray(data.niceToHaveSkills)
+          ? data.niceToHaveSkills
+          : [];
       const next = {
         jobTitle: data.jobTitle || "",
-        requiredSkills: Array.isArray(data.requiredSkills) ? data.requiredSkills : [],
+        primarySkills,
+        secondarySkills,
+        requiredSkills: primarySkills,
         designation: data.designation || "",
         experienceYears: data.experienceYears || "",
         location: data.location || "",
         education: data.education || "",
-        niceToHaveSkills: Array.isArray(data.niceToHaveSkills) ? data.niceToHaveSkills : [],
+        niceToHaveSkills: secondarySkills,
+        certifications: Array.isArray(data.certifications) ? data.certifications : [],
         searchSummary: data.searchSummary || "",
       };
       const snapshot = jdText.trim();
@@ -498,28 +555,57 @@ export default function SearchDashboard({
                 </div>
                 <p className={`mt-1.5 text-sm leading-relaxed sm:text-[15px] ${L ? "text-stone-800" : "text-zinc-100"}`}>
                   {extracted.searchSummary ||
-                    `You're targeting ${extracted.jobTitle || "candidates"} with emphasis on ${(extracted.requiredSkills || []).slice(0, 4).join(", ") || "your requirements"}.`}
+                    `You're targeting ${extracted.jobTitle || "candidates"} with emphasis on ${(
+                      extracted.primarySkills ||
+                      extracted.requiredSkills ||
+                      []
+                    ).slice(0, 4).join(", ") || "your requirements"}.`}
                 </p>
-                <div className="mt-3 flex flex-wrap gap-1.5">
+                <div className="mt-3 grid gap-3">
                   {extracted.jobTitle ? (
-                    <Chip uiTheme={uiTheme} tone="violet">
-                      {extracted.jobTitle}
-                    </Chip>
+                    <FieldRow label="Role" uiTheme={uiTheme}>
+                      <Chip uiTheme={uiTheme} tone="violet">
+                        {extracted.jobTitle}
+                      </Chip>
+                    </FieldRow>
                   ) : null}
+
                   {extracted.experienceYears ? (
-                    <Chip uiTheme={uiTheme} tone="amber">
-                      {extracted.experienceYears}
-                    </Chip>
+                    <FieldRow label="Experience" uiTheme={uiTheme}>
+                      <Chip uiTheme={uiTheme} tone="amber">
+                        {extracted.experienceYears}
+                      </Chip>
+                    </FieldRow>
                   ) : null}
-                  {(extracted.requiredSkills || []).slice(0, 10).map((s) => (
-                    <Chip key={s} uiTheme={uiTheme} tone="teal">
-                      {s}
-                    </Chip>
-                  ))}
+
+                  {(extracted.primarySkills || extracted.requiredSkills || []).length ? (
+                    <FieldRow label="Primary skills" uiTheme={uiTheme}>
+                      {(extracted.primarySkills || extracted.requiredSkills || []).slice(0, 12).map((s) => (
+                        <Chip key={`pri-${s}`} uiTheme={uiTheme} tone="teal">
+                          {s}
+                        </Chip>
+                      ))}
+                    </FieldRow>
+                  ) : null}
+
+                  {(extracted.secondarySkills || extracted.niceToHaveSkills || []).length ? (
+                    <FieldRow label="Secondary skills" uiTheme={uiTheme}>
+                      {(extracted.secondarySkills || extracted.niceToHaveSkills || []).slice(0, 12).map((s) => (
+                        <Chip key={`sec-${s}`} uiTheme={uiTheme} tone="zinc">
+                          {s}
+                        </Chip>
+                      ))}
+                    </FieldRow>
+                  ) : null}
+
                   {extracted.location ? (
-                    <Chip uiTheme={uiTheme} tone="zinc">
-                      {extracted.location}
-                    </Chip>
+                    <FieldRow label="Location" uiTheme={uiTheme}>
+                      {splitListValue(extracted.location).map((loc) => (
+                        <Chip key={`loc-${loc}`} uiTheme={uiTheme} tone="zinc">
+                          {loc}
+                        </Chip>
+                      ))}
+                    </FieldRow>
                   ) : null}
                 </div>
                 {waTime ? (
@@ -587,6 +673,22 @@ export default function SearchDashboard({
           </div>
         ) : null}
       </div>
+    </div>
+  );
+}
+
+function FieldRow({ label, children, uiTheme = "dark" }) {
+  const L = uiTheme === "light";
+  return (
+    <div>
+      <p
+        className={`mb-1 text-[10px] font-semibold uppercase tracking-wider ${
+          L ? "text-stone-500" : "text-zinc-400"
+        }`}
+      >
+        {label}
+      </p>
+      <div className="flex flex-wrap gap-1.5">{children}</div>
     </div>
   );
 }

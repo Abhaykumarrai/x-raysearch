@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from "react";
-import { apolloEnrich, callOpenAI, getApolloEmailPhone, sleep } from "../../api/helpers.js";
+import { apolloEnrich, callOpenAI, getApolloEmailPhone } from "../../api/helpers.js";
 import { shortlistKey } from "../../lib/openSearchStorage.js";
 import {
   ensureVoicesLoaded,
@@ -99,6 +99,51 @@ function linkedInSlug(u) {
   }
 }
 
+function normalizeSkillText(value) {
+  return String(value || "")
+    .toLowerCase()
+    .replace(/[.+]/g, " ")
+    .replace(/[^a-z0-9#]/g, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+function skillSet(arr) {
+  const set = new Set();
+  for (const raw of arr || []) {
+    const n = normalizeSkillText(raw);
+    if (n) set.add(n);
+  }
+  return set;
+}
+
+function buildCandidateSkillBuckets(candidate, jdPrimary, jdSecondary) {
+  const candSkills = Array.isArray(candidate?.skills) ? candidate.skills : [];
+  const candSet = skillSet(candSkills);
+  const primarySet = skillSet(jdPrimary);
+  const secondarySet = skillSet(jdSecondary);
+  const primaryMatched = [];
+  const primaryMissing = [];
+  const secondaryMatched = [];
+
+  for (const sk of jdPrimary || []) {
+    const n = normalizeSkillText(sk);
+    if (!n) continue;
+    if (candSet.has(n)) primaryMatched.push(sk);
+    else primaryMissing.push(sk);
+  }
+  for (const sk of jdSecondary || []) {
+    const n = normalizeSkillText(sk);
+    if (!n) continue;
+    if (candSet.has(n)) secondaryMatched.push(sk);
+  }
+  const otherSkills = candSkills.filter((sk) => {
+    const n = normalizeSkillText(sk);
+    return n && !primarySet.has(n) && !secondarySet.has(n);
+  });
+  return { primaryMatched, primaryMissing, secondaryMatched, otherSkills };
+}
+
 /** Match each input candidate to one API row; never reuse a row (avoids wrong scores when the model repeats ids or URLs). */
 function resolveBatchRowsToMap(slim, results) {
   const used = new Set();
@@ -134,23 +179,49 @@ function resolveBatchRowsToMap(slim, results) {
 }
 
 async function scoreCandidatesBatch(list, extractedJson, callOpenAI) {
-  const slim = list.map((c, i) => ({
-    candidateId: i,
-    profileUrl: c.profileUrl,
-    name: c.name,
-    title: c.title,
-    company: c.company,
-    location: c.location,
-    skills: c.skills || [],
-  }));
+  const jdObj = JSON.parse(extractedJson || "{}");
+  const jdPrimary = Array.isArray(jdObj.primarySkills) ? jdObj.primarySkills : jdObj.requiredSkills || [];
+  const jdSecondary = Array.isArray(jdObj.secondarySkills) ? jdObj.secondarySkills : jdObj.niceToHaveSkills || [];
+  const slim = list.map((c, i) => {
+    const buckets = buildCandidateSkillBuckets(c, jdPrimary, jdSecondary);
+    return {
+      candidateId: i,
+      profileUrl: c.profileUrl,
+      name: c.name,
+      title: c.title,
+      company: c.company,
+      location: c.location,
+      skills: c.skills || [],
+      skillBuckets: {
+        primaryMatched: buckets.primaryMatched,
+        primaryMissing: buckets.primaryMissing,
+        secondaryMatched: buckets.secondaryMatched,
+        otherSkills: buckets.otherSkills.slice(0, 20),
+      },
+      currentRole: {
+        title: c.title || "",
+        company: c.company || "",
+        responsibilities: String(c.snippet || "").slice(0, 300),
+        technologiesUsed: (c.skills || []).slice(0, 10),
+      },
+      pastRoles: [],
+      totalExperienceYears: c.estimatedYears ?? null,
+      roleTags: [],
+    };
+  });
   const lastId = slim.length - 1;
   const system =
-    "You are a senior technical recruiter. Evaluate candidate fit precisely. Return only JSON.";
+    "You are a senior technical recruiter. Evaluate candidate fit precisely using explicit JD requirements and skillwise depth. Return only JSON.";
   const user = `Score each candidate against the job requirements.
 
 Requirements: ${extractedJson}
 Candidates (each object includes candidateId — copy it into your output; copy profileUrl exactly from the same object): ${JSON.stringify(slim)}
-Return JSON: { "results": [ { "candidateId": number, "profileUrl": string, "score": number 0-100, "summary": string (2 sentences), "scoreExplanation": string[] (3-4 bullets), "estimatedYears": number|null } ] }
+Return JSON: { "results": [ { "candidateId": number, "profileUrl": string, "skillsMatch": number 0-100, "experienceMatch": number 0-100, "roleFit": number 0-100, "overallMatchScore": number 0-100, "primarySkillsMet": string[], "primarySkillsMissing": string[], "strengths": string[] (2-4), "gaps": string[] (1-3), "reasoning": string (1-2 sentences), "summary": string (1-2 sentences), "scoreExplanation": string[] (3-4 concise bullets), "estimatedYears": number|null } ] }
+Scoring rules:
+- Missing most primary skills must keep skillsMatch below 50.
+- Evaluate experience quality over quantity: years, skill acquisition, and role relevance.
+- Use candidate skillBuckets heavily: primaryMatched, primaryMissing, secondaryMatched, otherSkills.
+- Scoring bands: 90-100 exceptional, 70-89 strong, 50-69 moderate, 30-49 weak, 0-29 poor.
 Rules: Return exactly ${slim.length} objects. Include every candidateId from 0 through ${lastId} once. profileUrl must be the exact string from the input row with the same candidateId.`;
   const maxTokens = Math.min(16384, 900 + slim.length * 450);
   const data = await callOpenAI(system, user, { maxTokens });
@@ -164,6 +235,9 @@ Rules: Return exactly ${slim.length} objects. Include every candidateId from 0 t
 }
 
 async function scoreCandidatesParallelChunks(list, extractedJson, prevByUrl, callOpenAI, concurrency = 6) {
+  const jdObj = JSON.parse(extractedJson || "{}");
+  const jdPrimary = Array.isArray(jdObj.primarySkills) ? jdObj.primarySkills : jdObj.requiredSkills || [];
+  const jdSecondary = Array.isArray(jdObj.secondarySkills) ? jdObj.secondarySkills : jdObj.niceToHaveSkills || [];
   const out = [];
   for (let i = 0; i < list.length; i += concurrency) {
     const chunk = list.slice(i, i + concurrency);
@@ -175,16 +249,45 @@ async function scoreCandidatesParallelChunks(list, extractedJson, prevByUrl, cal
             ? { enriched: prev.enriched, email: prev.email ?? "", phone: prev.phone ?? "" }
             : {};
         try {
+          const buckets = buildCandidateSkillBuckets(c, jdPrimary, jdSecondary);
+          const candidateContext = {
+            ...c,
+            skillBuckets: buckets,
+            currentRole: {
+              title: c.title || "",
+              company: c.company || "",
+              responsibilities: String(c.snippet || "").slice(0, 300),
+              technologiesUsed: (c.skills || []).slice(0, 10),
+            },
+            pastRoles: [],
+            totalExperienceYears: c.estimatedYears ?? null,
+            roleTags: [],
+          };
           const system =
-            "You are a senior technical recruiter. Evaluate candidate fit precisely. Return only JSON.";
-          const user = `Score this candidate against the job requirements. Requirements: ${extractedJson}. Candidate: ${JSON.stringify(c)}. Return JSON: { score: number (0-100), summary: string (2 sentences on why they match or don't), scoreExplanation: string[] (3-4 bullets on specific matches/gaps), estimatedYears: number or null (rough years of experience inferred from title/skills) }`;
+            "You are a senior technical recruiter. Evaluate candidate fit precisely using explicit JD requirements and skillwise depth. Return only JSON.";
+          const user = `Score this candidate against the job requirements.
+Requirements: ${extractedJson}
+Candidate context: ${JSON.stringify(candidateContext)}
+Return JSON: { skillsMatch: number (0-100), experienceMatch: number (0-100), roleFit: number (0-100), overallMatchScore: number (0-100), primarySkillsMet: string[], primarySkillsMissing: string[], strengths: string[] (2-4), gaps: string[] (1-3), reasoning: string (1-2 sentences), summary: string (1-2 sentences), scoreExplanation: string[] (3-4 concise bullets), estimatedYears: number or null (rough years inferred) }
+Rules: Missing most primary skills must keep skillsMatch below 50.`;
           const data = await callOpenAI(system, user, { maxTokens: 900 });
           return {
             ...c,
             ...enrich,
-            score: Number(data.score) || 0,
-            summary: data.summary || "",
-            scoreExplanation: Array.isArray(data.scoreExplanation) ? data.scoreExplanation : [],
+            skillsMatch: Number(data.skillsMatch) || 0,
+            experienceMatch: Number(data.experienceMatch) || 0,
+            roleFit: Number(data.roleFit) || 0,
+            overallMatchScore: Number(data.overallMatchScore) || 0,
+            score: Number(data.overallMatchScore ?? data.score) || 0,
+            primarySkillsMet: Array.isArray(data.primarySkillsMet) ? data.primarySkillsMet : buckets.primaryMatched,
+            primarySkillsMissing: Array.isArray(data.primarySkillsMissing) ? data.primarySkillsMissing : buckets.primaryMissing,
+            strengths: Array.isArray(data.strengths) ? data.strengths : [],
+            gaps: Array.isArray(data.gaps) ? data.gaps : [],
+            reasoning: data.reasoning || "",
+            summary: data.summary || data.reasoning || "",
+            scoreExplanation: Array.isArray(data.scoreExplanation)
+              ? data.scoreExplanation
+              : [data.reasoning || "Model response did not include score details."].filter(Boolean),
             estimatedYears: Number.isFinite(Number(data.estimatedYears)) ? Number(data.estimatedYears) : null,
           };
         } catch {
@@ -241,7 +344,14 @@ export default function CandidateResults({
   const extractedJson = useMemo(() => JSON.stringify(extracted || {}), [extracted]);
 
   const requiredSkillsLower = useMemo(
-    () => (extracted?.requiredSkills || []).map((s) => String(s).toLowerCase().trim()),
+    () =>
+      (extracted?.primarySkills || extracted?.requiredSkills || [])
+        .map((s) => String(s).toLowerCase().trim())
+        .filter(Boolean),
+    [extracted]
+  );
+  const requiredPrimarySkills = useMemo(
+    () => (extracted?.primarySkills || extracted?.requiredSkills || []).filter(Boolean),
     [extracted]
   );
 
@@ -426,16 +536,48 @@ export default function CandidateResults({
                 : {};
             let entry;
             try {
+              const jdObj = JSON.parse(extractedJson || "{}");
+              const jdPrimary = Array.isArray(jdObj.primarySkills) ? jdObj.primarySkills : jdObj.requiredSkills || [];
+              const jdSecondary = Array.isArray(jdObj.secondarySkills)
+                ? jdObj.secondarySkills
+                : jdObj.niceToHaveSkills || [];
+              const buckets = buildCandidateSkillBuckets(c, jdPrimary, jdSecondary);
               const system =
-                "You are a senior technical recruiter. Evaluate candidate fit precisely. Return only JSON.";
-              const user = `Score this candidate against the job requirements. Requirements: ${extractedJson}. Candidate: ${JSON.stringify(c)}. Return JSON: { score: number (0-100), summary: string (2 sentences on why they match or don't), scoreExplanation: string[] (3-4 bullets on specific matches/gaps), estimatedYears: number or null (rough years of experience inferred from title/skills) }`;
+                "You are a senior technical recruiter. Evaluate candidate fit precisely using explicit JD requirements and skillwise depth. Return only JSON.";
+              const user = `Score this candidate against the job requirements.
+Requirements: ${extractedJson}
+Candidate context: ${JSON.stringify({
+  ...c,
+  skillBuckets: buckets,
+  currentRole: {
+    title: c.title || "",
+    company: c.company || "",
+    responsibilities: String(c.snippet || "").slice(0, 300),
+    technologiesUsed: (c.skills || []).slice(0, 10),
+  },
+  pastRoles: [],
+  totalExperienceYears: c.estimatedYears ?? null,
+  roleTags: [],
+})}
+Return JSON: { skillsMatch: number (0-100), experienceMatch: number (0-100), roleFit: number (0-100), overallMatchScore: number (0-100), primarySkillsMet: string[], primarySkillsMissing: string[], strengths: string[] (2-4), gaps: string[] (1-3), reasoning: string (1-2 sentences), summary: string (1-2 sentences), scoreExplanation: string[] (3-4 concise bullets), estimatedYears: number or null }`;
               const data = await callOpenAI(system, user);
               entry = {
                 ...c,
                 ...enrich,
-                score: Number(data.score) || 0,
-                summary: data.summary || "",
-                scoreExplanation: Array.isArray(data.scoreExplanation) ? data.scoreExplanation : [],
+                skillsMatch: Number(data.skillsMatch) || 0,
+                experienceMatch: Number(data.experienceMatch) || 0,
+                roleFit: Number(data.roleFit) || 0,
+                overallMatchScore: Number(data.overallMatchScore) || 0,
+                score: Number(data.overallMatchScore ?? data.score) || 0,
+                primarySkillsMet: Array.isArray(data.primarySkillsMet) ? data.primarySkillsMet : buckets.primaryMatched,
+                primarySkillsMissing: Array.isArray(data.primarySkillsMissing) ? data.primarySkillsMissing : buckets.primaryMissing,
+                strengths: Array.isArray(data.strengths) ? data.strengths : [],
+                gaps: Array.isArray(data.gaps) ? data.gaps : [],
+                reasoning: data.reasoning || "",
+                summary: data.summary || data.reasoning || "",
+                scoreExplanation: Array.isArray(data.scoreExplanation)
+                  ? data.scoreExplanation
+                  : [data.reasoning || "Model response did not include score details."].filter(Boolean),
                 estimatedYears: Number.isFinite(Number(data.estimatedYears)) ? Number(data.estimatedYears) : null,
               };
             } catch (e) {
@@ -450,7 +592,6 @@ export default function CandidateResults({
               };
             }
             onScoredCandidates((prev) => [...(Array.isArray(prev) ? prev : []), entry]);
-            await sleep(120);
           }
         } else {
           let next = [];
@@ -466,9 +607,20 @@ export default function CandidateResults({
               return {
                 ...c,
                 ...enrich,
-                score: Number(row.score) || 0,
-                summary: row.summary || "",
-                scoreExplanation: Array.isArray(row.scoreExplanation) ? row.scoreExplanation : [],
+                skillsMatch: Number(row.skillsMatch) || 0,
+                experienceMatch: Number(row.experienceMatch) || 0,
+                roleFit: Number(row.roleFit) || 0,
+                overallMatchScore: Number(row.overallMatchScore) || Number(row.score) || 0,
+                score: Number(row.overallMatchScore ?? row.score) || 0,
+                primarySkillsMet: Array.isArray(row.primarySkillsMet) ? row.primarySkillsMet : [],
+                primarySkillsMissing: Array.isArray(row.primarySkillsMissing) ? row.primarySkillsMissing : [],
+                strengths: Array.isArray(row.strengths) ? row.strengths : [],
+                gaps: Array.isArray(row.gaps) ? row.gaps : [],
+                reasoning: row.reasoning || "",
+                summary: row.summary || row.reasoning || "",
+                scoreExplanation: Array.isArray(row.scoreExplanation)
+                  ? row.scoreExplanation
+                  : [row.reasoning || "Model response did not include score details."].filter(Boolean),
                 estimatedYears: Number.isFinite(Number(row.estimatedYears)) ? Number(row.estimatedYears) : null,
               };
             });
@@ -582,6 +734,8 @@ export default function CandidateResults({
     ? "Profiles are ranked by how well they match your extracted requirements."
     : "Profiles are listed in match order once scoring completes.";
   const subtitleText = showPipelineProgress ? busySubtitle : idleSubtitle;
+  const hasDisplayRows = displayRows.length > 0;
+  const splitProgressLayout = showPipelineProgress && hasDisplayRows;
 
   return (
     <div>
@@ -601,89 +755,194 @@ export default function CandidateResults({
       >
         {subtitleText}
       </p>
-      {showPipelineProgress ? (
-        <RankedPipelineProgress
-          variant={dark ? "dark" : "light"}
-          pipelinePhase={pipelinePhase}
-          scoring={scoring}
-          serpLinkedInHits={serpLinkedInHits}
-          parsedCandidateCount={(candidates || []).length}
-          scoredCandidateCount={(scoredCandidates || []).length}
-        />
-      ) : null}
-
-      {scoreError ? (
-        <p className={`mt-3 text-sm ${dark ? "text-red-400" : "text-red-600"}`}>{scoreError}</p>
-      ) : null}
-
-      {oneByOne && (scoredCandidates || []).length > 0 ? (
-        <div
-          className={`mt-4 flex flex-wrap items-center justify-between gap-3 rounded-lg border px-4 py-3 ${
-            dark ? "border-zinc-700 bg-zinc-900/60" : "border-slate-200 bg-slate-50"
-          }`}
-        >
-          <p className={`text-sm ${dark ? "text-zinc-300" : "text-slate-700"}`}>
-            {spotlightView ? (
-              <>
-                <span className={`font-semibold ${dark ? "text-white" : "text-slate-900"}`}>Spotlight</span> —
-                candidate {rankedForSpotlight.length ? safeSpotIdx + 1 : 0} of {rankedForSpotlight.length} (by match
-                score, auto-rotating)
-              </>
-            ) : (
-              <span className={`font-semibold ${dark ? "text-white" : "text-slate-900"}`}>Full list</span>
-            )}
-          </p>
-          <button
-            type="button"
-            onClick={() => setSpotlightView((v) => !v)}
-            className={`rounded-lg border px-3 py-1.5 text-sm font-semibold shadow-sm ${
-              dark
-                ? "border-violet-500/50 bg-violet-950/50 text-violet-200 hover:bg-violet-900/50"
-                : "border-indigo-200 bg-white text-indigo-700 hover:bg-indigo-50"
-            }`}
-          >
-            {spotlightView ? "Show full ranked list" : "Back to spotlight"}
-          </button>
+      {splitProgressLayout ? (
+        <div className="mt-4 grid gap-4 lg:grid-cols-[260px_minmax(0,1fr)] lg:items-start">
+          <aside className="lg:sticky lg:top-4">
+            <RankedPipelineProgress
+              orientation="vertical"
+              variant={dark ? "dark" : "light"}
+              pipelinePhase={pipelinePhase}
+              scoring={scoring}
+              serpLinkedInHits={serpLinkedInHits}
+              parsedCandidateCount={(candidates || []).length}
+              scoredCandidateCount={(scoredCandidates || []).length}
+            />
+          </aside>
+          <div>
+            {scoreError ? (
+              <p className={`text-sm ${dark ? "text-red-400" : "text-red-600"}`}>{scoreError}</p>
+            ) : null}
+            {oneByOne && (scoredCandidates || []).length > 0 ? (
+              <div
+                className={`mt-4 flex flex-wrap items-center justify-between gap-3 rounded-lg border px-4 py-3 ${
+                  dark ? "border-zinc-700 bg-zinc-900/60" : "border-slate-200 bg-slate-50"
+                }`}
+              >
+                <p className={`text-sm ${dark ? "text-zinc-300" : "text-slate-700"}`}>
+                  {spotlightView ? (
+                    <>
+                      <span className={`font-semibold ${dark ? "text-white" : "text-slate-900"}`}>Spotlight</span> —
+                      candidate {rankedForSpotlight.length ? safeSpotIdx + 1 : 0} of {rankedForSpotlight.length} (by
+                      match score, auto-rotating)
+                    </>
+                  ) : (
+                    <span className={`font-semibold ${dark ? "text-white" : "text-slate-900"}`}>Full list</span>
+                  )}
+                </p>
+                <button
+                  type="button"
+                  onClick={() => setSpotlightView((v) => !v)}
+                  className={`rounded-lg border px-3 py-1.5 text-sm font-semibold shadow-sm ${
+                    dark
+                      ? "border-violet-500/50 bg-violet-950/50 text-violet-200 hover:bg-violet-900/50"
+                      : "border-indigo-200 bg-white text-indigo-700 hover:bg-indigo-50"
+                  }`}
+                >
+                  {spotlightView ? "Show full ranked list" : "Back to spotlight"}
+                </button>
+              </div>
+            ) : null}
+            {spotlightCandidate ? (
+              <div className="mt-6">
+                <CandidateCard
+                  candidate={spotlightCandidate}
+                  requiredSkillsLower={requiredSkillsLower}
+                  requiredSkills={requiredPrimarySkills}
+                  comparisonContext={{
+                    primarySkills: extracted?.primarySkills || extracted?.requiredSkills || [],
+                    secondarySkills: extracted?.secondarySkills || extracted?.niceToHaveSkills || [],
+                    expectedLocation: extracted?.location || "",
+                    expectedExperience: extracted?.experienceYears || "",
+                  }}
+                  onEnrich={handleEnrich}
+                  enriching={enrichingUrl === spotlightCandidate.profileUrl}
+                  enrichError={enrichErrors[spotlightCandidate.profileUrl]}
+                  variant={dark ? "dark" : "light"}
+                  shortlisted={isShortlisted(spotlightCandidate)}
+                  onToggleShortlist={onToggleShortlist ? () => onToggleShortlist(spotlightCandidate) : undefined}
+                  contactCollapsed={dark}
+                />
+              </div>
+            ) : null}
+            <div className={`mt-6 grid grid-cols-1 gap-4 ${oneByOne && spotlightView ? "hidden" : ""}`}>
+              {displayRows.map((c) => (
+                <CandidateCard
+                  key={c.profileUrl}
+                  candidate={c}
+                  requiredSkillsLower={requiredSkillsLower}
+                  requiredSkills={requiredPrimarySkills}
+                  comparisonContext={{
+                    primarySkills: extracted?.primarySkills || extracted?.requiredSkills || [],
+                    secondarySkills: extracted?.secondarySkills || extracted?.niceToHaveSkills || [],
+                    expectedLocation: extracted?.location || "",
+                    expectedExperience: extracted?.experienceYears || "",
+                  }}
+                  onEnrich={handleEnrich}
+                  enriching={enrichingUrl === c.profileUrl}
+                  enrichError={enrichErrors[c.profileUrl]}
+                  variant={dark ? "dark" : "light"}
+                  shortlisted={isShortlisted(c)}
+                  onToggleShortlist={onToggleShortlist ? () => onToggleShortlist(c) : undefined}
+                  contactCollapsed={dark}
+                  scorePending={Boolean(c.scorePending)}
+                />
+              ))}
+            </div>
+          </div>
         </div>
-      ) : null}
-
-      {spotlightCandidate ? (
-        <div className="mt-6">
-          <CandidateCard
-            candidate={spotlightCandidate}
-            requiredSkillsLower={requiredSkillsLower}
-            onEnrich={handleEnrich}
-            enriching={enrichingUrl === spotlightCandidate.profileUrl}
-            enrichError={enrichErrors[spotlightCandidate.profileUrl]}
-            variant={dark ? "dark" : "light"}
-            shortlisted={isShortlisted(spotlightCandidate)}
-            onToggleShortlist={onToggleShortlist ? () => onToggleShortlist(spotlightCandidate) : undefined}
-            contactCollapsed={dark}
-          />
-        </div>
-      ) : null}
-
-      <div
-        className={`mt-6 grid grid-cols-1 gap-4 ${
-          oneByOne && spotlightView ? "hidden" : ""
-        }`}
-      >
-        {displayRows.map((c) => (
-          <CandidateCard
-            key={c.profileUrl}
-            candidate={c}
-            requiredSkillsLower={requiredSkillsLower}
-            onEnrich={handleEnrich}
-            enriching={enrichingUrl === c.profileUrl}
-            enrichError={enrichErrors[c.profileUrl]}
-            variant={dark ? "dark" : "light"}
-            shortlisted={isShortlisted(c)}
-            onToggleShortlist={onToggleShortlist ? () => onToggleShortlist(c) : undefined}
-            contactCollapsed={dark}
-            scorePending={Boolean(c.scorePending)}
-          />
-        ))}
-      </div>
+      ) : (
+        <>
+          {showPipelineProgress ? (
+            <RankedPipelineProgress
+              variant={dark ? "dark" : "light"}
+              pipelinePhase={pipelinePhase}
+              scoring={scoring}
+              serpLinkedInHits={serpLinkedInHits}
+              parsedCandidateCount={(candidates || []).length}
+              scoredCandidateCount={(scoredCandidates || []).length}
+            />
+          ) : null}
+          {scoreError ? (
+            <p className={`mt-3 text-sm ${dark ? "text-red-400" : "text-red-600"}`}>{scoreError}</p>
+          ) : null}
+          {oneByOne && (scoredCandidates || []).length > 0 ? (
+            <div
+              className={`mt-4 flex flex-wrap items-center justify-between gap-3 rounded-lg border px-4 py-3 ${
+                dark ? "border-zinc-700 bg-zinc-900/60" : "border-slate-200 bg-slate-50"
+              }`}
+            >
+              <p className={`text-sm ${dark ? "text-zinc-300" : "text-slate-700"}`}>
+                {spotlightView ? (
+                  <>
+                    <span className={`font-semibold ${dark ? "text-white" : "text-slate-900"}`}>Spotlight</span> —
+                    candidate {rankedForSpotlight.length ? safeSpotIdx + 1 : 0} of {rankedForSpotlight.length} (by
+                    match score, auto-rotating)
+                  </>
+                ) : (
+                  <span className={`font-semibold ${dark ? "text-white" : "text-slate-900"}`}>Full list</span>
+                )}
+              </p>
+              <button
+                type="button"
+                onClick={() => setSpotlightView((v) => !v)}
+                className={`rounded-lg border px-3 py-1.5 text-sm font-semibold shadow-sm ${
+                  dark
+                    ? "border-violet-500/50 bg-violet-950/50 text-violet-200 hover:bg-violet-900/50"
+                    : "border-indigo-200 bg-white text-indigo-700 hover:bg-indigo-50"
+                }`}
+              >
+                {spotlightView ? "Show full ranked list" : "Back to spotlight"}
+              </button>
+            </div>
+          ) : null}
+          {spotlightCandidate ? (
+            <div className="mt-6">
+              <CandidateCard
+                candidate={spotlightCandidate}
+                requiredSkillsLower={requiredSkillsLower}
+                requiredSkills={requiredPrimarySkills}
+                comparisonContext={{
+                  primarySkills: extracted?.primarySkills || extracted?.requiredSkills || [],
+                  secondarySkills: extracted?.secondarySkills || extracted?.niceToHaveSkills || [],
+                  expectedLocation: extracted?.location || "",
+                  expectedExperience: extracted?.experienceYears || "",
+                }}
+                onEnrich={handleEnrich}
+                enriching={enrichingUrl === spotlightCandidate.profileUrl}
+                enrichError={enrichErrors[spotlightCandidate.profileUrl]}
+                variant={dark ? "dark" : "light"}
+                shortlisted={isShortlisted(spotlightCandidate)}
+                onToggleShortlist={onToggleShortlist ? () => onToggleShortlist(spotlightCandidate) : undefined}
+                contactCollapsed={dark}
+              />
+            </div>
+          ) : null}
+          <div className={`mt-6 grid grid-cols-1 gap-4 ${oneByOne && spotlightView ? "hidden" : ""}`}>
+            {displayRows.map((c) => (
+              <CandidateCard
+                key={c.profileUrl}
+                candidate={c}
+                requiredSkillsLower={requiredSkillsLower}
+                requiredSkills={requiredPrimarySkills}
+                comparisonContext={{
+                  primarySkills: extracted?.primarySkills || extracted?.requiredSkills || [],
+                  secondarySkills: extracted?.secondarySkills || extracted?.niceToHaveSkills || [],
+                  expectedLocation: extracted?.location || "",
+                  expectedExperience: extracted?.experienceYears || "",
+                }}
+                onEnrich={handleEnrich}
+                enriching={enrichingUrl === c.profileUrl}
+                enrichError={enrichErrors[c.profileUrl]}
+                variant={dark ? "dark" : "light"}
+                shortlisted={isShortlisted(c)}
+                onToggleShortlist={onToggleShortlist ? () => onToggleShortlist(c) : undefined}
+                contactCollapsed={dark}
+                scorePending={Boolean(c.scorePending)}
+              />
+            ))}
+          </div>
+        </>
+      )}
 
       {displayRows.length === 0 && !scoring && !(scoredCandidates || []).length && !pipelineBusy ? (
         <p className={`mt-6 text-center ${dark ? "text-zinc-500" : "text-slate-600"}`}>

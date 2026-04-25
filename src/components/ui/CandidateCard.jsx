@@ -2,7 +2,6 @@ import { useState } from "react";
 import ApolloProfileModal from "./ApolloProfileModal.jsx";
 import PlatformBadge from "./PlatformBadge.jsx";
 import ScoreBadge, { scoreTone } from "./ScoreBadge.jsx";
-import SkillTag from "./SkillTag.jsx";
 import Spinner from "./Spinner.jsx";
 
 function avatarUrl(name) {
@@ -34,7 +33,7 @@ function ScoreRingPending() {
   );
 }
 
-function ScoreRing({ score, pending }) {
+function ScoreRing({ score, pending, matchedCount = 0, missingCount = 0 }) {
   if (pending) {
     return <ScoreRingPending />;
   }
@@ -46,6 +45,20 @@ function ScoreRing({ score, pending }) {
   const cy = size / 2;
   const circumference = 2 * Math.PI * r;
   const dashOffset = circumference - (s / 100) * circumference;
+  const matched = Math.max(0, Number(matchedCount) || 0);
+  const missing = Math.max(0, Number(missingCount) || 0);
+  const total = matched + missing;
+  const matchedPct = total > 0 ? Math.round((matched / total) * 100) : 0;
+  const pieTitle =
+    total > 0
+      ? `Matched: ${matched} | Missing: ${missing}`
+      : "No skill match data available";
+  const pieStyle = {
+    background:
+      total > 0
+        ? `conic-gradient(#10b981 0% ${matchedPct}%, #fb7185 ${matchedPct}% 100%)`
+        : "conic-gradient(#52525b 0% 100%)",
+  };
   return (
     <div className="relative shrink-0" style={{ width: size, height: size }}>
       <svg width={size} height={size} className="-rotate-90" aria-hidden>
@@ -63,7 +76,15 @@ function ScoreRing({ score, pending }) {
         />
       </svg>
       <div className="pointer-events-none absolute inset-0 flex items-center justify-center">
-        <span className="text-sm font-bold tabular-nums tracking-tight text-white">{Math.round(s)}%</span>
+        <span
+          className="flex size-8 items-center justify-center rounded-full border border-zinc-600/80 shadow-inner"
+          style={pieStyle}
+          title={pieTitle}
+          aria-label={pieTitle}
+          aria-hidden
+        >
+          <span className="size-2 rounded-full bg-zinc-950/95" />
+        </span>
       </div>
     </div>
   );
@@ -72,6 +93,8 @@ function ScoreRing({ score, pending }) {
 export default function CandidateCard({
   candidate,
   requiredSkillsLower,
+  requiredSkills = [],
+  comparisonContext = {},
   onEnrich,
   enriching,
   enrichError,
@@ -122,6 +145,29 @@ export default function CandidateCard({
     });
   }
 
+  const presentSkills = Array.isArray(candidate.primarySkillsMet)
+    ? candidate.primarySkillsMet.filter(Boolean)
+    : [];
+  const missingSkills = Array.isArray(candidate.primarySkillsMissing)
+    ? candidate.primarySkillsMissing.filter(Boolean)
+    : [];
+  const fallbackPresent = skills.filter((sk) => skillMatches(sk));
+  const fallbackMissing = (requiredSkills || []).filter((req) => !skillMatches(req));
+  const tablePresent = presentSkills.length ? presentSkills : fallbackPresent;
+  const tableMissing = missingSkills.length ? missingSkills : fallbackMissing;
+  const secondaryExpected = Array.isArray(comparisonContext.secondarySkills) ? comparisonContext.secondarySkills : [];
+  const secondaryPresent = skills.filter((sk) => secondaryExpected.some((s) => skillMatchesPair(sk, s)));
+  const secondaryMissing = secondaryExpected.filter((s) => !skills.some((sk) => skillMatchesPair(sk, s)));
+  const expectedLocationTokens = splitListValue(comparisonContext.expectedLocation || "");
+  const candidateLocation = String(candidate.location || "").trim();
+  const locationMatched = expectedLocationTokens.length
+    ? expectedLocationTokens.some((loc) => candidateLocation.toLowerCase().includes(loc.toLowerCase()))
+    : false;
+  const expectedYears = parseExperienceRange(comparisonContext.expectedExperience || "");
+  const candidateYears = Number.isFinite(Number(candidate.estimatedYears)) ? Number(candidate.estimatedYears) : null;
+  const experienceMatched =
+    candidateYears != null && expectedYears ? candidateYears >= expectedYears.min && candidateYears <= expectedYears.max : false;
+
   const cardBase = dark
     ? "rounded-2xl border border-zinc-700/80 bg-[#2a2a2a] p-5 shadow-xl"
     : "flex flex-col rounded-2xl border-2 border-amber-100/95 bg-[#fffefb] p-5 shadow-[0_6px_28px_rgb(28_25_23/0.06)] ring-1 ring-stone-200/40";
@@ -129,24 +175,18 @@ export default function CandidateCard({
   const subtitleParts = [candidate.title, candidate.company, candidate.location].filter(Boolean);
   const subtitle = subtitleParts.join(" · ") || "—";
 
-  let primaryMatchAssigned = false;
-  function skillMatchVariant(sk) {
-    const m = skillMatches(sk);
-    if (!m) return null;
-    if (!primaryMatchAssigned) {
-      primaryMatchAssigned = true;
-      return "primary";
-    }
-    return "secondary";
-  }
-
   if (dark) {
     return (
       <div className={cardBase}>
         <div className="flex gap-5">
           <div className="flex shrink-0 flex-col items-center gap-1.5">
             <div className="relative">
-              <ScoreRing score={candidate.score} pending={scorePending} />
+              <ScoreRing
+                score={candidate.score}
+                pending={scorePending}
+                matchedCount={tablePresent.length}
+                missingCount={tableMissing.length}
+              />
               {!scorePending && hasScoreRationale ? (
                 <button
                   type="button"
@@ -180,20 +220,19 @@ export default function CandidateCard({
 
         <div className="my-4 border-t border-zinc-700/90" />
 
-        <div className="flex flex-wrap gap-2">
-          {skills.slice(0, 14).map((sk, i) => (
-            <SkillTag
-              key={`${sk}-${i}`}
-              label={sk}
-              highlight={skillMatches(sk)}
-              dark
-              matchVariant={skillMatchVariant(sk)}
-            />
-          ))}
-          {skills.length > 14 ? (
-            <span className="self-center text-xs text-zinc-500">+{skills.length - 14} more</span>
-          ) : null}
-        </div>
+        <SkillComparisonTable
+          dark
+          primaryPresent={tablePresent}
+          primaryMissing={tableMissing}
+          secondaryPresent={secondaryPresent}
+          secondaryMissing={secondaryMissing}
+          expectedLocation={expectedLocationTokens}
+          candidateLocation={candidateLocation}
+          locationMatched={locationMatched}
+          expectedExperience={String(comparisonContext.expectedExperience || "").trim()}
+          candidateExperienceYears={candidateYears}
+          experienceMatched={experienceMatched}
+        />
 
         <p className="mt-4 line-clamp-2 text-sm leading-relaxed text-zinc-400">
           {scorePending ? (
@@ -346,15 +385,20 @@ export default function CandidateCard({
           <div className="mt-2">
             <PlatformBadge platformId={platformId} dark={!!dark} href={platformBadgeHref} />
           </div>
-          <div className="mt-3 flex flex-wrap gap-1.5">
-            {skills.slice(0, 14).map((sk) => (
-              <SkillTag key={sk} label={sk} highlight={skillMatches(sk)} dark={dark} />
-            ))}
-            {skills.length > 14 ? (
-              <span className={`text-xs ${dark ? "text-zinc-600" : "text-slate-400"}`}>
-                +{skills.length - 14} more
-              </span>
-            ) : null}
+          <div className="mt-3">
+            <SkillComparisonTable
+              dark={dark}
+              primaryPresent={tablePresent}
+              primaryMissing={tableMissing}
+              secondaryPresent={secondaryPresent}
+              secondaryMissing={secondaryMissing}
+              expectedLocation={expectedLocationTokens}
+              candidateLocation={candidateLocation}
+              locationMatched={locationMatched}
+              expectedExperience={String(comparisonContext.expectedExperience || "").trim()}
+              candidateExperienceYears={candidateYears}
+              experienceMatched={experienceMatched}
+            />
           </div>
         </div>
       </div>
@@ -482,6 +526,190 @@ export default function CandidateCard({
         payload={apolloModalPayload}
         dark={false}
       />
+    </div>
+  );
+}
+
+function skillMatchesPair(a, b) {
+  const x = String(a || "").toLowerCase().trim();
+  const y = String(b || "").toLowerCase().trim();
+  if (!x || !y) return false;
+  return x === y || x.includes(y) || y.includes(x);
+}
+
+function splitListValue(value) {
+  const raw = String(value || "").trim();
+  if (!raw) return [];
+  return raw
+    .split(/(?:\s*\|\s*|\s*,\s*|\s*\/\s*|\s+(?:or|and)\s+)/i)
+    .map((x) => x.trim())
+    .filter(Boolean);
+}
+
+function parseExperienceRange(text) {
+  const s = String(text || "");
+  const nums = s.match(/\d+(?:\.\d+)?/g)?.map((n) => Number(n)) || [];
+  if (!nums.length) return null;
+  if (nums.length === 1) return { min: nums[0], max: nums[0] + 50 };
+  const min = Math.min(nums[0], nums[1]);
+  const max = Math.max(nums[0], nums[1]);
+  return { min, max };
+}
+
+function SkillComparisonTable({
+  primaryPresent,
+  primaryMissing,
+  secondaryPresent,
+  secondaryMissing,
+  expectedLocation,
+  candidateLocation,
+  locationMatched,
+  expectedExperience,
+  candidateExperienceYears,
+  experienceMatched,
+  dark = false,
+}) {
+  const present = (primaryPresent || []).slice(0, 8);
+  const missing = (primaryMissing || []).slice(0, 8);
+  const secPresent = (secondaryPresent || []).slice(0, 8);
+  const secMissing = (secondaryMissing || []).slice(0, 8);
+  const expectedLoc = (expectedLocation || []).slice(0, 6);
+  return (
+    <div className={`overflow-hidden rounded-xl border ${dark ? "border-zinc-700 bg-zinc-900/55" : "border-slate-200 bg-white/80"}`}>
+      <table className="w-full border-collapse text-left">
+        <thead>
+          <tr className={dark ? "border-b border-zinc-700" : "border-b border-slate-200"}>
+            <th className={`w-32 px-3 py-2 text-[10px] font-semibold uppercase tracking-wide ${dark ? "text-zinc-400" : "text-slate-500"}`}>
+              Requirement
+            </th>
+            <th className={`px-3 py-2 text-[10px] font-semibold uppercase tracking-wide ${dark ? "text-emerald-300" : "text-emerald-700"}`}>
+              Present
+            </th>
+            <th className={`px-3 py-2 text-[10px] font-semibold uppercase tracking-wide ${dark ? "text-rose-300" : "text-rose-700"}`}>
+              Missing
+            </th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td className={`px-3 py-2 align-top text-xs font-medium ${dark ? "text-zinc-400" : "text-slate-600"}`}>
+              Primary skills
+            </td>
+            <td className="px-3 py-2 align-top">
+              <div className="flex flex-wrap gap-1.5">
+                {present.length ? (
+                  present.map((s) => (
+                    <span key={`p-${s}`} className={`rounded-full border px-2 py-0.5 text-xs ${dark ? "border-emerald-500/45 bg-emerald-500/10 text-emerald-200" : "border-emerald-300 bg-emerald-50 text-emerald-800"}`}>
+                      {s}
+                    </span>
+                  ))
+                ) : (
+                  <span className={`text-xs ${dark ? "text-zinc-500" : "text-slate-400"}`}>—</span>
+                )}
+              </div>
+            </td>
+            <td className="px-3 py-2 align-top">
+              <div className="flex flex-wrap gap-1.5">
+                {missing.length ? (
+                  missing.map((s) => (
+                    <span key={`m-${s}`} className={`rounded-full border px-2 py-0.5 text-xs ${dark ? "border-rose-500/45 bg-rose-500/10 text-rose-200" : "border-rose-300 bg-rose-50 text-rose-800"}`}>
+                      {s}
+                    </span>
+                  ))
+                ) : (
+                  <span className={`text-xs ${dark ? "text-zinc-500" : "text-slate-400"}`}>None</span>
+                )}
+              </div>
+            </td>
+          </tr>
+          <tr className={dark ? "border-t border-zinc-700" : "border-t border-slate-200"}>
+            <td className={`px-3 py-2 align-top text-xs font-medium ${dark ? "text-zinc-400" : "text-slate-600"}`}>
+              Secondary skills
+            </td>
+            <td className="px-3 py-2 align-top">
+              <div className="flex flex-wrap gap-1.5">
+                {secPresent.length ? (
+                  secPresent.map((s) => (
+                    <span
+                      key={`sp-${s}`}
+                      className={`rounded-full border px-2 py-0.5 text-xs ${dark ? "border-emerald-500/35 bg-emerald-500/10 text-emerald-200" : "border-emerald-300 bg-emerald-50 text-emerald-800"}`}
+                    >
+                      {s}
+                    </span>
+                  ))
+                ) : (
+                  <span className={`text-xs ${dark ? "text-zinc-500" : "text-slate-400"}`}>—</span>
+                )}
+              </div>
+            </td>
+            <td className="px-3 py-2 align-top">
+              <div className="flex flex-wrap gap-1.5">
+                {secMissing.length ? (
+                  secMissing.map((s) => (
+                    <span
+                      key={`sm-${s}`}
+                      className={`rounded-full border px-2 py-0.5 text-xs ${dark ? "border-rose-500/35 bg-rose-500/10 text-rose-200" : "border-rose-300 bg-rose-50 text-rose-800"}`}
+                    >
+                      {s}
+                    </span>
+                  ))
+                ) : (
+                  <span className={`text-xs ${dark ? "text-zinc-500" : "text-slate-400"}`}>None</span>
+                )}
+              </div>
+            </td>
+          </tr>
+          <tr className={dark ? "border-t border-zinc-700" : "border-t border-slate-200"}>
+            <td className={`px-3 py-2 align-top text-xs font-medium ${dark ? "text-zinc-400" : "text-slate-600"}`}>
+              Location
+            </td>
+            <td className="px-3 py-2 align-top">
+              <span className={`rounded-full border px-2 py-0.5 text-xs ${dark ? "border-emerald-500/35 bg-emerald-500/10 text-emerald-200" : "border-emerald-300 bg-emerald-50 text-emerald-800"}`}>
+                {candidateLocation || "Not provided"}
+              </span>
+            </td>
+            <td className="px-3 py-2 align-top">
+              <div className="flex flex-wrap gap-1.5">
+                {!locationMatched && expectedLoc.length
+                  ? expectedLoc.map((loc) => (
+                      <span
+                        key={`loc-${loc}`}
+                        className={`rounded-full border px-2 py-0.5 text-xs ${dark ? "border-rose-500/35 bg-rose-500/10 text-rose-200" : "border-rose-300 bg-rose-50 text-rose-800"}`}
+                      >
+                        {loc}
+                      </span>
+                    ))
+                  : (
+                      <span className={`text-xs ${dark ? "text-zinc-500" : "text-slate-400"}`}>
+                        {locationMatched ? "Matched" : "No location requirement"}
+                      </span>
+                    )}
+              </div>
+            </td>
+          </tr>
+          <tr className={dark ? "border-t border-zinc-700" : "border-t border-slate-200"}>
+            <td className={`px-3 py-2 align-top text-xs font-medium ${dark ? "text-zinc-400" : "text-slate-600"}`}>
+              Experience
+            </td>
+            <td className="px-3 py-2 align-top">
+              <span className={`rounded-full border px-2 py-0.5 text-xs ${dark ? "border-emerald-500/35 bg-emerald-500/10 text-emerald-200" : "border-emerald-300 bg-emerald-50 text-emerald-800"}`}>
+                {candidateExperienceYears != null ? `${candidateExperienceYears} years (estimated)` : "Not available"}
+              </span>
+            </td>
+            <td className="px-3 py-2 align-top">
+              {!experienceMatched && expectedExperience ? (
+                <span className={`rounded-full border px-2 py-0.5 text-xs ${dark ? "border-rose-500/35 bg-rose-500/10 text-rose-200" : "border-rose-300 bg-rose-50 text-rose-800"}`}>
+                  Required: {expectedExperience}
+                </span>
+              ) : (
+                <span className={`text-xs ${dark ? "text-zinc-500" : "text-slate-400"}`}>
+                  {expectedExperience ? "Matched" : "No experience requirement"}
+                </span>
+              )}
+            </td>
+          </tr>
+        </tbody>
+      </table>
     </div>
   );
 }

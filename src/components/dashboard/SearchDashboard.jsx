@@ -153,6 +153,9 @@ export default function SearchDashboard({
   voiceReadAloudRef.current = nayraEnabled;
 
   const hasAnalysis = Boolean(extracted && String(extracted.jobTitle || "").trim());
+  const [newPrimarySkill, setNewPrimarySkill] = useState("");
+  const [newSecondarySkill, setNewSecondarySkill] = useState("");
+  const [newLocation, setNewLocation] = useState("");
 
   function clearStaggerTimers() {
     staggerTimersRef.current.forEach(clearTimeout);
@@ -365,6 +368,58 @@ Prompt:\n${jdText}`;
   }
 
   const waTime = formatWaTime(threadTs);
+  const primarySkills = extracted?.primarySkills || extracted?.requiredSkills || [];
+  const secondarySkills = extracted?.secondarySkills || extracted?.niceToHaveSkills || [];
+  const locationTokens = splitListValue(extracted?.location || "");
+
+  function patchExtracted(partial) {
+    if (!extracted) return;
+    onExtracted({
+      ...extracted,
+      ...partial,
+    });
+  }
+
+  function addUniqueToList(list, value) {
+    const v = String(value || "").trim();
+    if (!v) return list || [];
+    const exists = (list || []).some((x) => String(x).toLowerCase().trim() === v.toLowerCase());
+    if (exists) return list || [];
+    return [...(list || []), v];
+  }
+
+  function removeSkill(kind, skill) {
+    const src = kind === "primary" ? primarySkills : secondarySkills;
+    const next = src.filter((x) => String(x).toLowerCase().trim() !== String(skill).toLowerCase().trim());
+    if (kind === "primary") {
+      patchExtracted({ primarySkills: next, requiredSkills: next });
+    } else {
+      patchExtracted({ secondarySkills: next, niceToHaveSkills: next });
+    }
+  }
+
+  function addSkill(kind) {
+    if (kind === "primary") {
+      const next = addUniqueToList(primarySkills, newPrimarySkill);
+      patchExtracted({ primarySkills: next, requiredSkills: next });
+      setNewPrimarySkill("");
+    } else {
+      const next = addUniqueToList(secondarySkills, newSecondarySkill);
+      patchExtracted({ secondarySkills: next, niceToHaveSkills: next });
+      setNewSecondarySkill("");
+    }
+  }
+
+  function removeLocation(loc) {
+    const next = locationTokens.filter((x) => String(x).toLowerCase().trim() !== String(loc).toLowerCase().trim());
+    patchExtracted({ location: next.join(", ") });
+  }
+
+  function addLocationToken() {
+    const next = addUniqueToList(locationTokens, newLocation);
+    patchExtracted({ location: next.join(", ") });
+    setNewLocation("");
+  }
 
   return (
     <div className="mx-auto flex w-full max-w-7xl flex-col gap-5 pb-8">
@@ -564,49 +619,83 @@ Prompt:\n${jdText}`;
                 <div className="mt-3 grid gap-3">
                   {extracted.jobTitle ? (
                     <FieldRow label="Role" uiTheme={uiTheme}>
-                      <Chip uiTheme={uiTheme} tone="violet">
-                        {extracted.jobTitle}
-                      </Chip>
+                      <div className="flex w-full max-w-xl items-center gap-2">
+                        <input
+                          value={extracted.jobTitle || ""}
+                          onChange={(e) => patchExtracted({ jobTitle: e.target.value })}
+                          className={`w-full rounded-md border px-2.5 py-1.5 text-xs ${
+                            L
+                              ? "border-amber-200 bg-white text-stone-900"
+                              : "border-zinc-700 bg-zinc-900 text-zinc-100"
+                          }`}
+                        />
+                      </div>
                     </FieldRow>
                   ) : null}
 
                   {extracted.experienceYears ? (
                     <FieldRow label="Experience" uiTheme={uiTheme}>
-                      <Chip uiTheme={uiTheme} tone="amber">
-                        {extracted.experienceYears}
-                      </Chip>
+                      <div className="flex w-full max-w-xs items-center gap-2">
+                        <input
+                          value={extracted.experienceYears || ""}
+                          onChange={(e) => patchExtracted({ experienceYears: e.target.value })}
+                          className={`w-full rounded-md border px-2.5 py-1.5 text-xs ${
+                            L
+                              ? "border-amber-200 bg-white text-stone-900"
+                              : "border-zinc-700 bg-zinc-900 text-zinc-100"
+                          }`}
+                        />
+                      </div>
                     </FieldRow>
                   ) : null}
 
-                  {(extracted.primarySkills || extracted.requiredSkills || []).length ? (
+                  {primarySkills.length ? (
                     <FieldRow label="Primary skills" uiTheme={uiTheme}>
-                      {(extracted.primarySkills || extracted.requiredSkills || []).slice(0, 12).map((s) => (
-                        <Chip key={`pri-${s}`} uiTheme={uiTheme} tone="teal">
+                      {primarySkills.slice(0, 20).map((s) => (
+                        <EditableChip key={`pri-${s}`} tone="teal" uiTheme={uiTheme} onRemove={() => removeSkill("primary", s)}>
                           {s}
-                        </Chip>
+                        </EditableChip>
                       ))}
+                      <AddTokenInput
+                        uiTheme={uiTheme}
+                        value={newPrimarySkill}
+                        onChange={setNewPrimarySkill}
+                        onAdd={() => addSkill("primary")}
+                        placeholder="Add primary skill"
+                      />
                     </FieldRow>
                   ) : null}
 
-                  {(extracted.secondarySkills || extracted.niceToHaveSkills || []).length ? (
-                    <FieldRow label="Secondary skills" uiTheme={uiTheme}>
-                      {(extracted.secondarySkills || extracted.niceToHaveSkills || []).slice(0, 12).map((s) => (
-                        <Chip key={`sec-${s}`} uiTheme={uiTheme} tone="zinc">
-                          {s}
-                        </Chip>
-                      ))}
-                    </FieldRow>
-                  ) : null}
+                  <FieldRow label="Secondary skills" uiTheme={uiTheme}>
+                    {secondarySkills.slice(0, 20).map((s) => (
+                      <EditableChip key={`sec-${s}`} tone="zinc" uiTheme={uiTheme} onRemove={() => removeSkill("secondary", s)}>
+                        {s}
+                      </EditableChip>
+                    ))}
+                    <AddTokenInput
+                      uiTheme={uiTheme}
+                      value={newSecondarySkill}
+                      onChange={setNewSecondarySkill}
+                      onAdd={() => addSkill("secondary")}
+                      placeholder="Add secondary skill"
+                    />
+                  </FieldRow>
 
-                  {extracted.location ? (
-                    <FieldRow label="Location" uiTheme={uiTheme}>
-                      {splitListValue(extracted.location).map((loc) => (
-                        <Chip key={`loc-${loc}`} uiTheme={uiTheme} tone="zinc">
-                          {loc}
-                        </Chip>
-                      ))}
-                    </FieldRow>
-                  ) : null}
+                  <FieldRow label="Location" uiTheme={uiTheme}>
+                    {locationTokens.map((loc) => (
+                      <EditableChip key={`loc-${loc}`} uiTheme={uiTheme} tone="zinc" onRemove={() => removeLocation(loc)}>
+                        {loc}
+                      </EditableChip>
+                    ))}
+                    <AddTokenInput
+                      uiTheme={uiTheme}
+                      value={newLocation}
+                      onChange={setNewLocation}
+                      onAdd={addLocationToken}
+                      placeholder="Add location"
+                    />
+                  </FieldRow>
+
                 </div>
                 {waTime ? (
                   <p className={`mt-2 text-right text-[11px] ${L ? "text-stone-400" : "text-zinc-500"}`}>{waTime}</p>
@@ -689,6 +778,62 @@ function FieldRow({ label, children, uiTheme = "dark" }) {
         {label}
       </p>
       <div className="flex flex-wrap gap-1.5">{children}</div>
+    </div>
+  );
+}
+
+function EditableChip({ children, tone = "zinc", uiTheme = "dark", onRemove }) {
+  return (
+    <span className="inline-flex items-center gap-1">
+      <Chip uiTheme={uiTheme} tone={tone}>
+        {children}
+      </Chip>
+      <button
+        type="button"
+        onClick={onRemove}
+        className={`inline-flex size-5 items-center justify-center rounded-full border text-[11px] font-bold ${
+          uiTheme === "light"
+            ? "border-stone-300 bg-white text-stone-700 hover:bg-stone-100"
+            : "border-zinc-600 bg-zinc-900 text-zinc-200 hover:bg-zinc-800"
+        }`}
+        title="Remove"
+        aria-label={`Remove ${children}`}
+      >
+        ×
+      </button>
+    </span>
+  );
+}
+
+function AddTokenInput({ value, onChange, onAdd, placeholder, uiTheme = "dark" }) {
+  const L = uiTheme === "light";
+  return (
+    <div className="inline-flex items-center gap-1.5">
+      <input
+        value={value}
+        onChange={(e) => onChange(e.target.value)}
+        onKeyDown={(e) => {
+          if (e.key === "Enter") {
+            e.preventDefault();
+            onAdd();
+          }
+        }}
+        placeholder={placeholder}
+        className={`w-36 rounded-md border px-2 py-1 text-xs ${
+          L ? "border-stone-300 bg-white text-stone-900" : "border-zinc-700 bg-zinc-900 text-zinc-100"
+        }`}
+      />
+      <button
+        type="button"
+        onClick={onAdd}
+        className={`rounded-md border px-2 py-1 text-xs font-semibold ${
+          L
+            ? "border-violet-300 bg-violet-50 text-violet-900 hover:bg-violet-100"
+            : "border-violet-500/40 bg-violet-950/50 text-violet-200 hover:bg-violet-900/50"
+        }`}
+      >
+        Add
+      </button>
     </div>
   );
 }
